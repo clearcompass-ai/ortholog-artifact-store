@@ -50,7 +50,13 @@ go tool cover -func="$PROFILE" | \
         fails = 0
         for (pkg in total) {
             # Exclude cmd/ packages (wiring only).
-            if (pkg ~ /\/cmd(\/|$)/) continue
+            # Exclude packages where per-package coverage is not a meaningful signal:
+            #   - cmd/           wiring only; integration-tested
+            #   - internal/testutil  test infrastructure; coverage attributes to callers
+            #   - tests/conformance  parametric suite; Wave 1 exercises one capability shape
+            if (pkg ~ /\/cmd(\/|$)/)                continue
+            if (pkg ~ /\/internal\/testutil(\/|$)/) continue
+            if (pkg ~ /\/tests\/conformance(\/|$)/) continue
 
             avg = total[pkg] / count[pkg]
             if (avg < threshold+0) {

@@ -38,9 +38,8 @@ func newScriptedBackend() *scriptedBackend {
 	return &scriptedBackend{inner: NewInMemoryBackend()}
 }
 
-func (s *scriptedBackend) setPushErr(err error)   { s.mu.Lock(); s.pushErr = err; s.mu.Unlock() }
-func (s *scriptedBackend) setFetchErr(err error)  { s.mu.Lock(); s.fetchErr = err; s.mu.Unlock() }
-func (s *scriptedBackend) setExistsErr(err error) { s.mu.Lock(); s.existsErr = err; s.mu.Unlock() }
+func (s *scriptedBackend) setPushErr(err error)  { s.mu.Lock(); s.pushErr = err; s.mu.Unlock() }
+func (s *scriptedBackend) setFetchErr(err error) { s.mu.Lock(); s.fetchErr = err; s.mu.Unlock() }
 
 func (s *scriptedBackend) Push(cid storage.CID, data []byte) error {
 	s.mu.Lock()
