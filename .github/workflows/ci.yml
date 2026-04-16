@@ -1,0 +1,122 @@
+# ============================================================================
+# ortholog-artifact-store — Per-PR CI
+#
+# Runs on every push and pull request. Must complete in under 10 minutes.
+# Fast failure: any step failing blocks the merge.
+#
+# What this catches:
+#   - Build breaks, type errors, compile failures
+#   - Lint violations (govet, staticcheck, gosec)
+#   - Logic errors in unit and HTTP-mocked tests
+#   - Race conditions (go test -race)
+#   - Goroutine leaks (goleak in TestMain)
+#   - Coverage drops below 80% per package
+#
+# What this does NOT catch (covered in other workflows):
+#   - Vendor-specific quirks (nightly.yml against real cloud, Wave 3)
+#   - Flaky tests that fail only on 2nd run (flake-detect.yml, weekly)
+#   - Crash paths in parsers (fuzz.yml, weekly)
+#   - Container-orchestration bugs (ci.yml + integration tests, Wave 2)
+# ============================================================================
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel previous runs on the same branch/PR when a new commit arrives.
+# Saves CI minutes without masking any signal the latest commit will re-run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.22"
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@2023.1.7
+          staticcheck ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.59
+          args: --timeout=2m
+
+  test:
+    name: test-race
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # Download modules ahead of tests so the test step shows only test time.
+      - name: download modules
+        run: go mod download
+
+      - name: build
+        run: go build ./...
+
+      - name: test with race detector
+        run: go test -race -count=1 -timeout=60s -coverprofile=coverage.out ./...
+
+      # Coverage gate. Fails the job if any non-cmd package < 80%.
+      - name: coverage gate
+        run: bash scripts/coverage-gate.sh coverage.out 80
+
+      # Upload the profile as a build artifact so reviewers can inspect.
+      - name: upload coverage profile
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-profile
+          path: coverage.out
+          retention-days: 14
+
+  # A tiny separate job: runs the fuzz targets for a few seconds each to
+  # catch regressions. Longer runs happen weekly in fuzz.yml.
+  fuzz-smoke:
+    name: fuzz-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: fuzz ExtractDigestFromIPFSCID (10s)
+        run: go test -fuzz=FuzzExtractDigestFromIPFSCID -fuzztime=10s ./backends
+
+      - name: fuzz SDKCIDToIPFSPath round-trip (10s)
+        run: go test -fuzz=FuzzSDKCIDToIPFSPath_RoundTrip -fuzztime=10s ./backends
+
+      - name: fuzz ParseCID (10s)
+        run: go test -fuzz=FuzzParseCID -fuzztime=10s ./backends

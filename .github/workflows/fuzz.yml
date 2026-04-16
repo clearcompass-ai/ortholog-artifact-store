@@ -1,0 +1,71 @@
+# ============================================================================
+# ortholog-artifact-store — Weekly fuzz runs
+#
+# Exercises each fuzz target for 5 minutes. If a crash is found, Go's
+# fuzz framework writes a reproducer into testdata/fuzz/. This workflow
+# commits any new corpus entries back to the repo via PR so the crash
+# becomes a permanent regression test.
+#
+# Why 5 minutes and not an hour: Go's coverage-guided fuzzer plateaus
+# quickly for our small parsers. Further runtime is diminishing returns.
+# If we later fuzz a larger surface, revisit the duration.
+# ============================================================================
+
+name: fuzz
+
+on:
+  schedule:
+    # Sunday 07:00 UTC. Chosen to land before Monday morning PR traffic.
+    - cron: "0 7 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  GO_VERSION: "1.22"
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - FuzzExtractDigestFromIPFSCID
+          - FuzzSDKCIDToIPFSPath_RoundTrip
+          - FuzzParseCID
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: fuzz ${{ matrix.target }} (5m)
+        run: go test -fuzz=${{ matrix.target }} -fuzztime=5m ./backends
+
+      - name: check for new corpus entries
+        id: corpus
+        run: |
+          if [ -n "$(git status --porcelain backends/testdata/)" ]; then
+            echo "new_corpus=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "new_corpus=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: open PR for new corpus (found crash)
+        if: steps.corpus.outputs.new_corpus == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: fuzz/${{ matrix.target }}-${{ github.run_id }}
+          commit-message: "fuzz: new corpus for ${{ matrix.target }}"
+          title: "fuzz: crash found by ${{ matrix.target }}"
+          body: |
+            Automated PR from the weekly fuzz workflow.
+            `${{ matrix.target }}` found input(s) that caused a failure.
+            The new corpus entries in `backends/testdata/` are the reproducer.
+            Reproduce locally with `go test ./backends -run=${{ matrix.target }}`.
+          labels: fuzz, bug

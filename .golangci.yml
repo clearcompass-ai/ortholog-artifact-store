@@ -1,0 +1,59 @@
+# golangci-lint configuration for ortholog-artifact-store.
+#
+# Philosophy: enforce only the linters that find real bugs. Style-only
+# linters (those that fight gofmt or disagree with idiomatic Go) are off.
+# If a linter produces more false positives than real finds on this
+# codebase, it's disabled with a comment explaining why.
+
+run:
+  timeout: 2m
+  tests: true
+  build-tags: []
+
+linters-settings:
+  errcheck:
+    # Don't force error checking on every write to stdout/stderr.
+    check-type-assertions: false
+    check-blank: false
+  staticcheck:
+    checks: ["all"]
+  govet:
+    enable-all: true
+    disable:
+      # shadow is noisy and mostly false-positive in Go.
+      - shadow
+  gosec:
+    excludes:
+      # G104: "errors unhandled" — errcheck already covers this.
+      - G104
+  revive:
+    rules:
+      - name: exported
+        disabled: true # opinionated; conflicts with documenting where useful
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - gosec
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    - gofmt
+    - goimports
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-rules:
+    # Tests frequently construct short-lived HTTP requests with hard-coded
+    # addresses. gosec's G107 (URL-from-variable) fires on these unhelpfully.
+    - path: _test\.go
+      linters:
+        - gosec
+    # Don't enforce comment rules on generated test helpers.
+    - path: internal/testutil/
+      linters:
+        - revive

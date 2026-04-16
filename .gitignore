@@ -1,0 +1,11 @@
+# Coverage artifacts
+coverage.out
+coverage.html
+
+# Go build artifacts
+/artifact-store
+*.test
+*.out
+
+# Fuzz corpus is committed under testdata/fuzz/; local cache is not
+/backends/testdata/fuzz/corpus/

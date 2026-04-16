@@ -1,0 +1,117 @@
+# ============================================================================
+# ortholog-artifact-store — Wave 2: testcontainer-backed integration tests
+#
+# Runs the full conformance suite against real protocol implementations
+# (MinIO, fake-gcs-server, Kubo) in Docker containers. This catches
+# wire-format divergences that Wave 1's HTTP-mocked tests cannot see:
+# multihash encoding drift in IPFS, SigV4 header ordering in S3, GCS
+# error-classification quirks.
+#
+# Gated on //go:build integration. Per-PR CI does NOT run this — only
+# the scheduled/dispatched workflow. Reason: Wave 2 takes ~90 seconds
+# and requires Docker-in-Docker, which is friction on every PR. The
+# HTTP-mocked tests in Wave 1 already catch 95% of regressions; Wave 2
+# is the safety net that runs nightly + on merges to main.
+#
+# What to do if this job fails:
+#   1. If the failure is in the conformance suite — that's a real
+#      protocol regression. Reproduce with `make test-integration`
+#      locally and fix.
+#   2. If the failure is container pull / timeout / flaky Docker —
+#      re-run the job. If it happens twice in a row, file an infra
+#      issue and pin the image digests more aggressively.
+# ============================================================================
+
+name: integration
+
+on:
+  # Nightly at 05:00 UTC (before the weekly flake-detect and fuzz runs).
+  schedule:
+    - cron: "0 5 * * *"
+  # Run on every merge to main so protocol regressions are caught
+  # within one merge cycle, not the next morning.
+  push:
+    branches: [main]
+  # Manual trigger for debugging.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.22"
+  # Pin image digests here so CI runs are reproducible. Updating these
+  # is a deliberate commit, not a silent drift behind :latest.
+  MINIO_IMAGE: "minio/minio:RELEASE.2024-03-21T23-13-43Z"
+  FAKEGCS_IMAGE: "fsouza/fake-gcs-server:1.49.2"
+  KUBO_IMAGE: "ipfs/kubo:v0.28.0"
+
+jobs:
+  integration:
+    name: testcontainer-suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # ubuntu-latest ships with Docker pre-installed and reachable via
+    # the default socket. No setup-docker step required.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: verify docker
+        run: |
+          docker version
+          docker info
+
+      # Pre-pull images so we see pull failures as a distinct step
+      # rather than as part of the first container startup — makes
+      # flakes easier to diagnose.
+      - name: pre-pull container images
+        run: |
+          docker pull "${MINIO_IMAGE}"
+          docker pull "${FAKEGCS_IMAGE}"
+          docker pull "${KUBO_IMAGE}"
+
+      - name: go mod download
+        run: go mod download
+
+      - name: build (integration tag)
+        run: go build -tags=integration ./...
+
+      - name: run Wave 2 integration suite
+        run: |
+          go test -race -count=1 -timeout=15m \
+            -tags=integration \
+            -v \
+            ./tests/integration/...
+
+      # If a test leaves a container behind (it shouldn't — every helper
+      # registers t.Cleanup to terminate), this step catches it and makes
+      # the GitHub Actions runner log visible for post-mortem.
+      - name: diagnose leaked containers
+        if: always()
+        run: |
+          echo "Running containers at job end (should be empty):"
+          docker ps --format 'table {{.ID}}\t{{.Image}}\t{{.Status}}'
+          echo
+          echo "Recent docker events:"
+          docker events --since 15m --until 0s || true
+
+  # Small companion job: validate the integration build tag also works
+  # without actually launching containers. Catches the common "code
+  # compiles on my laptop but references a package only available
+  # under -tags=integration" failure mode. Fast (no Docker).
+  integration-build:
+    name: build-only (tag validation)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: compile with integration tag
+        run: go vet -tags=integration ./...

@@ -1,0 +1,167 @@
+# ============================================================================
+# ortholog-artifact-store — Wave 3: real-cloud staging tests
+#
+# Runs the conformance suite against production APIs (AWS S3, GCS, Filebase).
+# Scheduled nightly; never per-PR or per-push. This is the layer that catches
+# vendor-specific production quirks — IAM edge cases, real SigV4 verification,
+# GCS V4 signed URL compatibility, Filebase IPFS behavior — that both the
+# HTTP mocks and the Docker containers miss.
+#
+# Cost control:
+#   - Dedicated staging accounts per vendor, scoped to test buckets only
+#   - Lifecycle rules on each bucket delete objects under staging/ after 24h
+#   - Budget alerts set at $20/month on each account (vendor-side)
+#   - Each test run uses a unique key prefix so parallel runs don't collide
+#   - The STAGING_ENABLED=1 second gate prevents accidental local triggers
+#
+# On failure:
+#   A failure almost always points at a real production regression — the
+#   HTTP mocks and containers already covered the "did the code compile"
+#   and "does it work against our model" questions. When Wave 3 fails:
+#     1. Check the failure class:
+#        - Credential/IAM issue → fix secrets, not code
+#        - Vendor rate-limit → retry the workflow manually
+#        - Real protocol regression → open an issue, the code is wrong
+#     2. If the failure reproduces twice, block production deploys until fixed.
+#     3. If it's a one-time vendor incident, note it and move on.
+# ============================================================================
+
+name: staging
+
+on:
+  schedule:
+    # 04:00 UTC — before Wave 2 integration (05:00) and fuzz (07:00).
+    # Ordering matters: if staging catches a regression, the operator
+    # reviewing morning logs sees it before they see the other layers.
+    - cron: "0 4 * * *"
+  # Manual trigger for debugging or post-deploy validation.
+  workflow_dispatch:
+    inputs:
+      vendors:
+        description: "Comma-separated vendor list (aws,gcs,filebase). Empty = all configured."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  # No id-token needed unless you switch to OIDC → cloud provider auth,
+  # which is recommended long-term but out of scope for this initial cut.
+
+env:
+  GO_VERSION: "1.22"
+  # The second gate. The Makefile refuses to run staging tests without this.
+  STAGING_ENABLED: "1"
+
+jobs:
+  staging:
+    name: real-cloud-suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Prevent parallel staging runs from stepping on each other. The
+    # per-test random prefix handles object-level isolation, but running
+    # two full suites concurrently against the same bucket inflates cost.
+    concurrency:
+      group: staging
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # ──────────────────────────────────────────────────────────────
+      # AWS credentials
+      # ──────────────────────────────────────────────────────────────
+      # Secrets named at the repo level:
+      #   STAGING_AWS_ACCESS_KEY_ID, STAGING_AWS_SECRET_ACCESS_KEY,
+      #   STAGING_AWS_REGION, STAGING_AWS_BUCKET
+      # IAM policy for that key must be scoped to:
+      #   s3:GetObject, s3:PutObject, s3:DeleteObject, s3:ListBucket,
+      #   s3:PutObjectTagging  — all Resource-limited to arn:aws:s3:::<bucket>/staging/*
+      - name: inject AWS env
+        run: |
+          echo "STAGING_AWS_ACCESS_KEY_ID=${{ secrets.STAGING_AWS_ACCESS_KEY_ID }}" >> "$GITHUB_ENV"
+          echo "STAGING_AWS_SECRET_ACCESS_KEY=${{ secrets.STAGING_AWS_SECRET_ACCESS_KEY }}" >> "$GITHUB_ENV"
+          echo "STAGING_AWS_REGION=${{ secrets.STAGING_AWS_REGION }}" >> "$GITHUB_ENV"
+          echo "STAGING_AWS_BUCKET=${{ secrets.STAGING_AWS_BUCKET }}" >> "$GITHUB_ENV"
+
+      # ──────────────────────────────────────────────────────────────
+      # GCS credentials
+      # ──────────────────────────────────────────────────────────────
+      # The service-account JSON is stored as a single secret and written
+      # to a temp file. The access token is minted here (not in test code)
+      # by shelling out to gcloud — this keeps auth off the critical path
+      # of the test suite.
+      - name: write GCS service-account key
+        if: ${{ secrets.STAGING_GCS_SERVICE_ACCOUNT_JSON != '' }}
+        run: |
+          echo "${{ secrets.STAGING_GCS_SERVICE_ACCOUNT_JSON }}" > /tmp/gcs-sa.json
+          chmod 600 /tmp/gcs-sa.json
+          echo "STAGING_GCS_SERVICE_ACCOUNT_JSON=/tmp/gcs-sa.json" >> "$GITHUB_ENV"
+          echo "STAGING_GCS_BUCKET=${{ secrets.STAGING_GCS_BUCKET }}" >> "$GITHUB_ENV"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcs-sa.json" >> "$GITHUB_ENV"
+
+      - name: mint GCS access token
+        if: ${{ secrets.STAGING_GCS_SERVICE_ACCOUNT_JSON != '' }}
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.STAGING_GCS_SERVICE_ACCOUNT_JSON }}
+
+      - name: export GCS access token
+        if: ${{ secrets.STAGING_GCS_SERVICE_ACCOUNT_JSON != '' }}
+        run: |
+          # google-github-actions/auth writes the token as GOOGLE_OAUTH_TOKEN
+          # in newer versions. Fall back to gcloud for older versions.
+          TOKEN="${GOOGLE_OAUTH_TOKEN:-$(gcloud auth application-default print-access-token)}"
+          echo "::add-mask::$TOKEN"
+          echo "STAGING_GCS_ACCESS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      # ──────────────────────────────────────────────────────────────
+      # Filebase credentials
+      # ──────────────────────────────────────────────────────────────
+      - name: inject Filebase env
+        run: |
+          echo "STAGING_FILEBASE_KEY=${{ secrets.STAGING_FILEBASE_KEY }}" >> "$GITHUB_ENV"
+          echo "STAGING_FILEBASE_SECRET=${{ secrets.STAGING_FILEBASE_SECRET }}" >> "$GITHUB_ENV"
+          echo "STAGING_FILEBASE_BUCKET=${{ secrets.STAGING_FILEBASE_BUCKET }}" >> "$GITHUB_ENV"
+          echo "STAGING_FILEBASE_IPFS_TOKEN=${{ secrets.STAGING_FILEBASE_IPFS_TOKEN }}" >> "$GITHUB_ENV"
+
+      - name: go mod download
+        run: go mod download
+
+      - name: build with staging tag
+        run: go build -tags=staging ./...
+
+      - name: run Wave 3 staging suite
+        run: make test-staging
+        env:
+          STAGING_ENABLED: "1"
+
+      # Failure diagnostics: list remaining objects under staging/ so the
+      # post-mortem shows what the failing test left behind. The 24h
+      # lifecycle rule catches these eventually, but a diagnostic dump
+      # speeds up investigation.
+      - name: diagnose leftover AWS objects
+        if: failure() && env.STAGING_AWS_BUCKET != ''
+        run: |
+          echo "Objects under staging/ in AWS bucket (top 50):"
+          # Uses the AWS CLI installed on ubuntu-latest by default.
+          aws s3 ls "s3://${STAGING_AWS_BUCKET}/staging/" --recursive | head -50 || true
+
+  # Companion job: ensure the staging build tag compiles even when
+  # secrets are absent. Catches PRs that break the tag without needing
+  # the full nightly run. Fast (no cloud access).
+  staging-build:
+    name: build-only (tag validation)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: compile with staging tag
+        run: go vet -tags=staging ./...
