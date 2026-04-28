@@ -5,7 +5,6 @@ package staging
 import (
 	"fmt"
 	"os"
-	"strings"
 	"testing"
 )
 
@@ -20,9 +19,11 @@ import (
 // Silently skipping a vendor because its credentials are absent would
 // mask the exact signal Wave 3 exists to provide.
 //
-// Specific vendor suites each read their own env vars in their setup.
-// TestMain just validates the shape: if the `STAGING_` prefix exists
-// at all, refuse to start with a partial credential set.
+// Wave 3 today validates exactly one vendor: real GCS. The S3-protocol
+// path is exercised in Wave 2 against a containerized RustFS, not in
+// Wave 3 against any real-cloud S3-compatible vendor. IPFS is no
+// longer a supported backend kind, so the prior Filebase-IPFS suite is
+// gone.
 func TestMain(m *testing.M) {
 	// Check the universal var first: STAGING_ENABLED must be set to "1".
 	// This is belt-and-suspenders on top of the build tag — it prevents
@@ -38,29 +39,10 @@ func TestMain(m *testing.M) {
 	}
 
 	// Validate per-vendor credential sets. A vendor is considered "in
-	// scope" if ANY of its env vars is set; all others must then also be
-	// set. Partial credentials are a configuration bug.
+	// scope" if ANY of its env vars is set; all others must then also
+	// be set. Partial credentials are a configuration bug.
 	var problems []string
-	for _, vendor := range []credentialGroup{
-		{
-			name: "GCS",
-			keys: []string{
-				"STAGING_GCS_BUCKET",
-				"STAGING_GCS_SERVICE_ACCOUNT_JSON",
-			},
-		},
-		{
-			// Filebase is exercised through its IPFS pinning gateway only.
-			// (S3-protocol vendor sprawl is out of scope for this repo —
-			// the supported S3-protocol implementation is RustFS, exercised
-			// in Wave 2 against a containerized RustFS, not in Wave 3
-			// against any real-cloud S3-compatible vendor.)
-			name: "Filebase IPFS",
-			keys: []string{
-				"STAGING_FILEBASE_IPFS_TOKEN",
-			},
-		},
-	} {
+	for _, vendor := range stagingVendors() {
 		if err := vendor.validate(); err != nil {
 			problems = append(problems, err.Error())
 		}
@@ -76,36 +58,28 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-type credentialGroup struct {
-	name string
-	keys []string
+// stagingVendors lists every vendor whose credential set is checked at
+// Wave 3 startup. Today: GCS only. Adding a new cloud-coupled backend
+// adds an entry here; the rest of the file is shape-stable.
+func stagingVendors() []credentialGroup {
+	return []credentialGroup{
+		{
+			name: "GCS",
+			keys: []string{
+				"STAGING_GCS_BUCKET",
+				"STAGING_GCS_SERVICE_ACCOUNT_JSON",
+			},
+		},
+	}
 }
 
-// validate checks that either ALL env vars are set or NONE are. A
-// partial set is always a misconfiguration.
-func (g credentialGroup) validate() error {
-	var present, absent []string
-	for _, k := range g.keys {
-		if os.Getenv(k) != "" {
-			present = append(present, k)
-		} else {
-			absent = append(absent, k)
-		}
-	}
-	if len(present) == 0 {
-		return nil // vendor not enabled, fine
-	}
-	if len(absent) > 0 {
-		return fmt.Errorf("%s partially configured; missing: %s",
-			g.name, strings.Join(absent, ", "))
-	}
-	return nil
-}
+// credentialGroup and its validate() method live in credentials.go
+// (non-build-tagged) so they can be unit-tested under
+// `go test ./tests/staging/` without -tags=staging.
 
 // Vendor-gating helpers used by each suite file to skip cleanly if a
 // vendor was not configured in this run. These are the ONLY places a
 // test may "skip" in Wave 3 — and the skip reason is always logged at
 // t.Logf so the reason appears in the CI summary.
 
-func gcsConfigured() bool          { return os.Getenv("STAGING_GCS_BUCKET") != "" }
-func filebaseIPFSConfigured() bool { return os.Getenv("STAGING_FILEBASE_IPFS_TOKEN") != "" }
+func gcsConfigured() bool { return os.Getenv("STAGING_GCS_BUCKET") != "" }

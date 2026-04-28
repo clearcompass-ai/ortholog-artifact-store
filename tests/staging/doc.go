@@ -7,18 +7,17 @@ Why this layer exists:
   - Wave 2 (containers) validates our model against the vendor's reference
     implementation running locally
   - Wave 3 (this layer) validates against actual cloud production APIs,
-    where IAM, STS, regional endpoints, eventual consistency, SigV4
-    clock skew, and vendor-specific rate limiting can break things that
-    both prior layers missed
+    where IAM, regional endpoints, eventual consistency, and vendor-
+    specific rate limiting can break things that both prior layers missed
 
-Container images lag production APIs by months. fake-gcs-server does not
-model the GCS signed-URL format accurately. IPFS clusters like Filebase
-add authentication, quotas, and rate limits that Kubo containers do not.
-Wave 3 is the layer that actually catches production regressions for the
-two cloud-coupled backends in scope (GCS and Filebase IPFS). The S3-
-protocol path is exercised in Wave 2 against a containerized RustFS;
-real-cloud S3 vendors (AWS, Wasabi, R2, Filebase-S3) are not in the
-supported set and intentionally not tested here.
+Container images lag production APIs by months. fake-gcs-server does
+not model the GCS signed-URL format accurately. Wave 3 is the layer
+that actually catches production regressions for the one cloud-coupled
+backend in scope (real GCS). The S3-protocol path is exercised in
+Wave 2 against a containerized RustFS — real-cloud S3 vendors (AWS,
+Wasabi, R2, Filebase-S3) are not in the supported set and intentionally
+not tested here. IPFS is no longer a supported backend kind; the prior
+Filebase-IPFS staging suite is gone.
 
 What this layer IS NOT:
   - A load test (see load-generator repo, not in this codebase)
@@ -36,9 +35,8 @@ Cost and scheduling:
 
 Credentials (loaded from env, fail loudly if absent when Wave 3 is
 invoked):
-  GCS:           STAGING_GCS_BUCKET, STAGING_GCS_SERVICE_ACCOUNT_JSON
-                 (path to key file)
-  Filebase IPFS: STAGING_FILEBASE_IPFS_TOKEN (Filebase's IPFS RPC token)
+  GCS: STAGING_GCS_BUCKET, STAGING_GCS_SERVICE_ACCOUNT_JSON
+       (path to service-account JSON file)
 
 Build tag:
   Every file carries  //go:build staging

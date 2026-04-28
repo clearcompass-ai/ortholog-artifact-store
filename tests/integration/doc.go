@@ -14,10 +14,11 @@ Why this layer exists:
 
 What this layer does NOT cover (deferred to Wave 3):
   - Vendor-specific quirks that ONLY appear in cloud production
-    environments (IAM, STS, VPC endpoints, regional latency, rate
-    limiting). Wave 3 runs against Filebase, real AWS, real GCS.
-  - Container images lag the vendor's production API by months to years.
-    A passing Wave 2 does not prove the behavior in production cloud.
+    environments (IAM, regional latency, rate limiting). Wave 3 runs
+    against real GCS.
+  - Container images lag the vendor's production API by months to
+    years. A passing Wave 2 does not prove the behavior in production
+    cloud.
 
 Build tag:
   Every file in this package carries  //go:build integration
@@ -27,14 +28,14 @@ Build tag:
 
 Prerequisites:
   - Docker daemon reachable (DOCKER_HOST env or /var/run/docker.sock)
-  - Pull access to: rustfs/rustfs, fsouza/fake-gcs-server, ipfs/kubo
+  - Pull access to: rustfs/rustfs, fsouza/fake-gcs-server
 
   If Docker is unreachable, TestMain bails out with a clear message.
   Tests do NOT silently skip — silently-skipped integration tests are
   the exact anti-pattern TESTING.md prohibits.
 
 Runtime:
-  ~90 seconds total for the full integration suite, dominated by
+  ~60 seconds total for the full integration suite, dominated by
   container startup (each pulls, boots, waits for readiness).
   Tests reuse containers across scenarios within a single run to amortize
   startup cost.
