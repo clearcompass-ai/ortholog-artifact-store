@@ -50,6 +50,10 @@ test-staging: ## Wave 3: real cloud against Filebase + AWS + GCS. Nightly only.
 .PHONY: test-wave3
 test-wave3: test-staging ## Alias: Wave 3 real-cloud tests.
 
+.PHONY: test-scale-gcs
+test-scale-gcs: ## Standalone load test: SCALE_N=10000 mixed-size pushes to real GCS. Requires STAGING_GCS_* env.
+	@bash scripts/run-scale-gcs.sh
+
 .PHONY: test-short
 test-short: ## Run only short tests (skip slow integrity sizes).
 	$(GO) test -race -count=1 -short -timeout=30s $(PKGS)
