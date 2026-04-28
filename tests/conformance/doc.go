@@ -1,9 +1,8 @@
 // Package conformance is the backend contract test suite.
 //
 // Every implementation of backends.BackendProvider — InMemoryBackend,
-// GCSBackend, RustFSBackend, IPFSBackend, MirroredStore — is expected
-// to pass this suite. The suite is the single source of truth for
-// backend behavior.
+// GCSBackend, RustFSBackend, MirroredStore — is expected to pass this
+// suite. The suite is the single source of truth for backend behavior.
 //
 // Consumers register a factory and get the full matrix of tests:
 //
@@ -16,9 +15,9 @@
 // The factory is called fresh per scenario — scenarios must not leak
 // state between each other. The suite itself lives outside _test.go
 // files so it can be imported from multiple test packages (unit tests
-// here, integration tests against containerized RustFS / Kubo /
-// fake-gcs-server in Wave 2, staging tests against real GCS and
-// Filebase IPFS in Wave 3).
+// here, integration tests against containerized RustFS and
+// fake-gcs-server in Wave 2, staging tests against real GCS in
+// Wave 3).
 //
 // What the suite covers:
 //   - Lifecycle: push → fetch → exists → delete round-trips

@@ -3,7 +3,6 @@ package conformance
 import (
 	"bytes"
 	"crypto/sha256"
-	"errors"
 	"sync"
 	"testing"
 
@@ -27,15 +26,16 @@ import (
 //   - SHA-256 (default) round-trips through every backend with
 //     CID.Bytes() preserved (algorithm byte + digest), via the canonical
 //     storage key cid.String().
-//   - A CID minted under a non-default algorithm registered through
-//     storage.RegisterAlgorithm either round-trips with byte-identical
-//     CID.Bytes() (general-purpose backends — memory, GCS, RustFS), or
-//     is rejected at the call boundary with storage.ErrNotSupported
-//     (algorithm-pinned backends — IPFS, gated by Capabilities.SHA256Only).
 //
-// Silent corruption — accepting a non-SHA-256 push and storing it under
-// a SHA-256 CID, for example — is forbidden, and this scenario fails
-// loudly when it occurs.
+//   - A CID minted under a non-default algorithm registered through
+//     storage.RegisterAlgorithm round-trips with byte-identical
+//     CID.Bytes(). Every supported backend (memory, GCS, RustFS,
+//     MirroredStore) keys on cid.String() and inherits this property.
+//
+// Pre-v7.75 drafts also had an algorithm-pinned variant for IPFS that
+// rejected non-SHA-256 CIDs. IPFS is no longer a supported backend
+// kind; the variant is gone. The supported set is uniformly general-
+// purpose at the wire-form layer.
 
 // wireFormTestAlgoTag is the multicodec-style 1-byte tag used by the
 // cross-algorithm wire-form scenario. 0xC2 is outside the SDK's pinned
@@ -73,7 +73,7 @@ func registerWireFormTestAlgorithm() {
 	})
 }
 
-func runCIDWireForm(t *testing.T, factory Factory, caps Capabilities) {
+func runCIDWireForm(t *testing.T, factory Factory, _ Capabilities) {
 	t.Run("sha256_round_trip_preserves_bytes_form", func(t *testing.T) {
 		// The default-algorithm round-trip is the property every
 		// backend must honor. We push under a SHA-256 CID, fetch
@@ -117,50 +117,11 @@ func runCIDWireForm(t *testing.T, factory Factory, caps Capabilities) {
 		}
 	})
 
-	if caps.SHA256Only {
-		t.Run("non_sha256_algorithm_rejected_with_err_not_supported", func(t *testing.T) {
-			// Backends that pin SHA-256 (currently IPFS, via
-			// multihash 0x12) must fail closed when handed a CID
-			// minted under any other algorithm. Silent acceptance
-			// would be the exact wire-form regression ADR-005 §2
-			// is designed to prevent — the algorithm byte would be
-			// stripped and the SDK-side SplitID derivation would
-			// look up the wrong commitment.
-			registerWireFormTestAlgorithm()
-			b := factory()
-			data := []byte("conformance/wire-form/non-sha256")
-			cid := storage.ComputeWith(data, wireFormTestAlgoTag)
-
-			err := b.Push(cid, data)
-			if !errors.Is(err, storage.ErrNotSupported) {
-				t.Fatalf("Push under %s: want errors.Is(err, ErrNotSupported), got %v",
-					wireFormTestAlgoName, err)
-			}
-
-			// And the same property on the read path: Fetch / Exists
-			// must reject before issuing any backend call. If the
-			// guard is missing on a read path, an attacker could
-			// drive a CID-mismatch path against the backend by
-			// forging a non-SHA-256 CID for content that happens to
-			// share the digest tail under SHA-256. Fail-closed here
-			// closes that class.
-			if _, err := b.Fetch(cid); !errors.Is(err, storage.ErrNotSupported) {
-				t.Fatalf("Fetch under %s: want ErrNotSupported, got %v",
-					wireFormTestAlgoName, err)
-			}
-			if _, err := b.Exists(cid); !errors.Is(err, storage.ErrNotSupported) {
-				t.Fatalf("Exists under %s: want ErrNotSupported, got %v",
-					wireFormTestAlgoName, err)
-			}
-		})
-		return
-	}
-
 	t.Run("non_sha256_algorithm_round_trips_with_bytes_preserved", func(t *testing.T) {
-		// General-purpose backends (memory, GCS, RustFS) key on
-		// cid.String() — the canonical "<algoname>:<hex>" form — so
-		// the algorithm byte survives Push→Fetch transparently. The
-		// scenario asserts that property end-to-end: push under a
+		// Every supported backend (memory, GCS, RustFS, MirroredStore)
+		// keys on cid.String() — the canonical "<algoname>:<hex>" form
+		// — so the algorithm byte survives Push→Fetch transparently.
+		// The scenario asserts that property end-to-end: push under a
 		// non-default algorithm, fetch back, recompute the CID under
 		// the same algorithm, and confirm CID.Bytes() is identical.
 		// Failure here means the backend either stripped the algorithm
@@ -181,7 +142,7 @@ func runCIDWireForm(t *testing.T, factory Factory, caps Capabilities) {
 		}
 
 		if err := b.Push(cid, data); err != nil {
-			t.Fatalf("Push under %s: %v (general-purpose backends must accept any registered algorithm)",
+			t.Fatalf("Push under %s: %v (every supported backend must accept any registered algorithm)",
 				wireFormTestAlgoName, err)
 		}
 		got, err := b.Fetch(cid)
