@@ -2,7 +2,6 @@ package conformance
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"fmt"
 	"testing"
 
@@ -38,10 +37,14 @@ func runIntegrity(t *testing.T, factory Factory, _ Capabilities) {
 			}
 			if !bytes.Equal(got, data) {
 				// Don't print megabytes of hex in the failure message.
-				wantDigest := sha256.Sum256(data)
-				gotDigest := sha256.Sum256(got)
-				t.Fatalf("byte mismatch at size=%d:\n  want_sha256=%x (len=%d)\n  got_sha256 =%x (len=%d)",
-					size, wantDigest, len(data), gotDigest, len(got))
+				// Hash under the same algorithm the CID was minted with —
+				// per ADR-005 §2 the artifact store stays algorithm-agile
+				// even in diagnostic paths, so a future non-SHA-256 CID
+				// produces a comparable failure mode.
+				wantCID := storage.ComputeWith(data, cid.Algorithm).String()
+				gotCID := storage.ComputeWith(got, cid.Algorithm).String()
+				t.Fatalf("byte mismatch at size=%d:\n  want=%s (len=%d)\n  got =%s (len=%d)",
+					size, wantCID, len(data), gotCID, len(got))
 			}
 		})
 	}

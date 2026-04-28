@@ -203,35 +203,19 @@ func createBackend(name string, cfg *config.Config, isMirror bool, _ *slog.Logge
 			Prefix: cfg.Prefix,
 		}), nil
 
-	case "s3":
+	case "rustfs":
 		endpoint := cfg.Endpoint
 		bucket := cfg.Bucket
 		if isMirror {
 			endpoint = cfg.MirrorEndpoint
 			bucket = cfg.MirrorBucket
 		}
-		return backends.NewS3Backend(backends.S3Config{
+		return backends.NewRustFSBackend(backends.RustFSConfig{
 			Endpoint:  endpoint,
 			Bucket:    bucket,
 			Region:    cfg.Region,
 			Prefix:    cfg.Prefix,
 			PathStyle: cfg.PathStyle,
-		}), nil
-
-	case "ipfs":
-		endpoint := cfg.Endpoint
-		token := cfg.IPFSBearerToken
-		if isMirror {
-			endpoint = cfg.MirrorEndpoint
-			token = cfg.MirrorBearerToken
-		}
-		if endpoint == "" {
-			endpoint = "http://localhost:5001"
-		}
-		return backends.NewIPFSBackend(backends.IPFSConfig{
-			APIEndpoint: endpoint,
-			Gateway:     cfg.IPFSGateway,
-			BearerToken: token,
 		}), nil
 
 	default:

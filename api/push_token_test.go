@@ -18,7 +18,9 @@ import (
 // ─── Helpers ────────────────────────────────────────────────────────
 
 // newTestPushWithToken builds a PushHandler wired with a real Ed25519
-// verifier, returning the private key the test can use to mint tokens.
+// verifier registered under empty kid (so existing tests that mint
+// tokens without a kid claim continue to dispatch). Returns the
+// private key the test can use to mint tokens.
 func newTestPushWithToken(t *testing.T, policy string) (
 	*PushHandler, *backends.InMemoryBackend, *testutil.SlogCapture, ed25519.PrivateKey,
 ) {
@@ -27,6 +29,10 @@ func newTestPushWithToken(t *testing.T, policy string) (
 	if err != nil {
 		t.Fatalf("keygen: %v", err)
 	}
+	verifier, err := NewEd25519UploadTokenVerifier(map[string]ed25519.PublicKey{"": pub})
+	if err != nil {
+		t.Fatalf("NewEd25519UploadTokenVerifier: %v", err)
+	}
 	cap := testutil.NewSlogCapture()
 	b := backends.NewInMemoryBackend()
 	h := &PushHandler{
@@ -34,7 +40,7 @@ func newTestPushWithToken(t *testing.T, policy string) (
 		verify:        true,
 		maxBody:       1024,
 		logger:        cap.Logger(),
-		tokenVerifier: NewEd25519UploadTokenVerifier(pub),
+		tokenVerifier: verifier,
 		tokenPolicy:   policy,
 	}
 	return h, b, cap, priv
@@ -79,11 +85,12 @@ func TestPush_TokenRequired_ValidAccepted(t *testing.T) {
 
 	data := []byte("accepted-with-token")
 	cid := storage.Compute(data)
+	// newTestPushWithToken registers the pubkey under empty kid; mint
+	// with no Kid claim so dispatch falls into the empty-kid slot.
 	tok := mintToken(t, priv, UploadTokenPayload{
 		CID:  cid.String(),
 		Size: int64(len(data)),
 		Exp:  time.Now().Unix() + 60,
-		Kid:  "op-key-A",
 	})
 
 	w := doPushWithToken(h, cid.String(), tok, data)
@@ -251,6 +258,10 @@ func TestPush_TokenOff_IgnoresHeader(t *testing.T) {
 	// This is the baseline deployment mode: the store trusts network
 	// segmentation entirely.
 	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	verifier, err := NewEd25519UploadTokenVerifier(map[string]ed25519.PublicKey{"": pub})
+	if err != nil {
+		t.Fatalf("NewEd25519UploadTokenVerifier: %v", err)
+	}
 	cap := testutil.NewSlogCapture()
 	b := backends.NewInMemoryBackend()
 	h := &PushHandler{
@@ -258,7 +269,7 @@ func TestPush_TokenOff_IgnoresHeader(t *testing.T) {
 		verify:        true,
 		maxBody:       1024,
 		logger:        cap.Logger(),
-		tokenVerifier: NewEd25519UploadTokenVerifier(pub),
+		tokenVerifier: verifier,
 		tokenPolicy:   "off",
 	}
 
@@ -268,6 +279,118 @@ func TestPush_TokenOff_IgnoresHeader(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status: want 200 (policy off ignores token), got %d", w.Code)
+	}
+	cap.AssertNoWarnings(t)
+}
+
+// ─── v7.75: token_unknown_kid audit reason ───────────────────────────
+
+// TestPush_TokenUnknownKid_AuditedAsTokenUnknownKid pins the audit
+// reason for the kid-dispatch fast-fail. SIEM filters break out
+// "token_unknown_kid" from "token_invalid" because the former signals
+// a rotation-window mismatch (legitimate) or fabricated kid (fraud)
+// rather than a tampered signature.
+func TestPush_TokenUnknownKid_AuditedAsTokenUnknownKid(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	verifier, err := NewEd25519UploadTokenVerifier(map[string]ed25519.PublicKey{
+		"op-known": pub,
+	})
+	if err != nil {
+		t.Fatalf("NewEd25519UploadTokenVerifier: %v", err)
+	}
+	cap := testutil.NewSlogCapture()
+	b := backends.NewInMemoryBackend()
+	h := &PushHandler{
+		backend:       b,
+		verify:        true,
+		maxBody:       1024,
+		logger:        cap.Logger(),
+		tokenVerifier: verifier,
+		tokenPolicy:   "required",
+	}
+
+	data := []byte("kid-attacker-payload")
+	cid := storage.Compute(data)
+	now := time.Now()
+	tok := mintToken(t, priv, UploadTokenPayload{
+		CID: cid.String(), Size: int64(len(data)), Exp: now.Unix() + 60,
+		Kid: "op-attacker",
+	})
+
+	w := doPushWithToken(h, cid.String(), tok, data)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status: want 401, got %d", w.Code)
+	}
+	cap.AssertContains(t, slog.LevelWarn, "push rejected: upload token failed",
+		map[string]any{
+			"event":       "artifact.push.rejected",
+			"reason":      "token_unknown_kid",
+			"claimed_cid": cid.String(),
+		})
+
+	// Backend must not have stored anything.
+	exists, _ := b.Exists(cid)
+	if exists {
+		t.Fatal("rejected push reached the backend")
+	}
+}
+
+// TestPush_TokenRotationWindow_OldKidStillVerifies pins the operator
+// rotation story for the WRITE path: during a rotation window, the
+// artifact store is loaded with both old and new operator pubkeys.
+// Tokens minted under either kid succeed; the store doesn't know or
+// care which is "current" — that's the operator's pipeline concern.
+func TestPush_TokenRotationWindow_OldKidStillVerifies(t *testing.T) {
+	pubOld, privOld, _ := ed25519.GenerateKey(rand.Reader)
+	pubNew, privNew, _ := ed25519.GenerateKey(rand.Reader)
+	verifier, err := NewEd25519UploadTokenVerifier(map[string]ed25519.PublicKey{
+		"op-2026": pubOld,
+		"op-2027": pubNew,
+	})
+	if err != nil {
+		t.Fatalf("NewEd25519UploadTokenVerifier: %v", err)
+	}
+	cap := testutil.NewSlogCapture()
+	b := backends.NewInMemoryBackend()
+	h := &PushHandler{
+		backend:       b,
+		verify:        true,
+		maxBody:       1024,
+		logger:        cap.Logger(),
+		tokenVerifier: verifier,
+		tokenPolicy:   "required",
+	}
+
+	now := time.Now()
+	for _, tc := range []struct {
+		name string
+		priv ed25519.PrivateKey
+		kid  string
+		body string
+	}{
+		{"old_kid", privOld, "op-2026", "old-key-payload"},
+		{"new_kid", privNew, "op-2027", "new-key-payload"},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			data := []byte(tc.body)
+			cid := storage.Compute(data)
+			tok := mintToken(t, tc.priv, UploadTokenPayload{
+				CID: cid.String(), Size: int64(len(data)), Exp: now.Unix() + 60,
+				Kid: tc.kid,
+			})
+			w := doPushWithToken(h, cid.String(), tok, data)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status: want 200, got %d; body=%s", w.Code, w.Body.String())
+			}
+			ok, _ := b.Exists(cid)
+			if !ok {
+				t.Fatal("backend missing the pushed bytes")
+			}
+		})
 	}
 	cap.AssertNoWarnings(t)
 }

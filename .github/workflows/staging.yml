@@ -1,11 +1,16 @@
 # ============================================================================
 # ortholog-artifact-store — Wave 3: real-cloud staging tests
 #
-# Runs the conformance suite against production APIs (AWS S3, GCS, Filebase).
-# Scheduled nightly; never per-PR or per-push. This is the layer that catches
-# vendor-specific production quirks — IAM edge cases, real SigV4 verification,
-# GCS V4 signed URL compatibility, Filebase IPFS behavior — that both the
-# HTTP mocks and the Docker containers miss.
+# Runs the conformance suite against the real GCS production API.
+# Scheduled nightly; never per-PR or per-push. This is the layer that
+# catches vendor-specific production quirks — GCS V4 signed URL
+# compatibility, real GCS error classification, regional latency —
+# that both the HTTP mocks and the Docker fake-gcs-server miss.
+#
+# The S3-protocol path is exercised in Wave 2 against a containerized
+# RustFS — real-cloud S3 vendors are not in the supported set. IPFS
+# is no longer a supported backend kind; the prior Filebase-IPFS suite
+# is gone.
 #
 # Cost control:
 #   - Dedicated staging accounts per vendor, scoped to test buckets only
@@ -48,7 +53,7 @@ permissions:
   # which is recommended long-term but out of scope for this initial cut.
 
 env:
-  GO_VERSION: "1.22"
+  GO_VERSION: "1.25.7"
   # The second gate. The Makefile refuses to run staging tests without this.
   STAGING_ENABLED: "1"
 
@@ -70,22 +75,6 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
-
-      # ──────────────────────────────────────────────────────────────
-      # AWS credentials
-      # ──────────────────────────────────────────────────────────────
-      # Secrets named at the repo level:
-      #   STAGING_AWS_ACCESS_KEY_ID, STAGING_AWS_SECRET_ACCESS_KEY,
-      #   STAGING_AWS_REGION, STAGING_AWS_BUCKET
-      # IAM policy for that key must be scoped to:
-      #   s3:GetObject, s3:PutObject, s3:DeleteObject, s3:ListBucket,
-      #   s3:PutObjectTagging  — all Resource-limited to arn:aws:s3:::<bucket>/staging/*
-      - name: inject AWS env
-        run: |
-          echo "STAGING_AWS_ACCESS_KEY_ID=${{ secrets.STAGING_AWS_ACCESS_KEY_ID }}" >> "$GITHUB_ENV"
-          echo "STAGING_AWS_SECRET_ACCESS_KEY=${{ secrets.STAGING_AWS_SECRET_ACCESS_KEY }}" >> "$GITHUB_ENV"
-          echo "STAGING_AWS_REGION=${{ secrets.STAGING_AWS_REGION }}" >> "$GITHUB_ENV"
-          echo "STAGING_AWS_BUCKET=${{ secrets.STAGING_AWS_BUCKET }}" >> "$GITHUB_ENV"
 
       # ──────────────────────────────────────────────────────────────
       # GCS credentials
@@ -118,16 +107,6 @@ jobs:
           echo "::add-mask::$TOKEN"
           echo "STAGING_GCS_ACCESS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
 
-      # ──────────────────────────────────────────────────────────────
-      # Filebase credentials
-      # ──────────────────────────────────────────────────────────────
-      - name: inject Filebase env
-        run: |
-          echo "STAGING_FILEBASE_KEY=${{ secrets.STAGING_FILEBASE_KEY }}" >> "$GITHUB_ENV"
-          echo "STAGING_FILEBASE_SECRET=${{ secrets.STAGING_FILEBASE_SECRET }}" >> "$GITHUB_ENV"
-          echo "STAGING_FILEBASE_BUCKET=${{ secrets.STAGING_FILEBASE_BUCKET }}" >> "$GITHUB_ENV"
-          echo "STAGING_FILEBASE_IPFS_TOKEN=${{ secrets.STAGING_FILEBASE_IPFS_TOKEN }}" >> "$GITHUB_ENV"
-
       - name: go mod download
         run: go mod download
 
@@ -139,16 +118,6 @@ jobs:
         env:
           STAGING_ENABLED: "1"
 
-      # Failure diagnostics: list remaining objects under staging/ so the
-      # post-mortem shows what the failing test left behind. The 24h
-      # lifecycle rule catches these eventually, but a diagnostic dump
-      # speeds up investigation.
-      - name: diagnose leftover AWS objects
-        if: failure() && env.STAGING_AWS_BUCKET != ''
-        run: |
-          echo "Objects under staging/ in AWS bucket (top 50):"
-          # Uses the AWS CLI installed on ubuntu-latest by default.
-          aws s3 ls "s3://${STAGING_AWS_BUCKET}/staging/" --recursive | head -50 || true
 
   # Companion job: ensure the staging build tag compiles even when
   # secrets are absent. Catches PRs that break the tag without needing

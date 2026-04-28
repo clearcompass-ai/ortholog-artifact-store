@@ -1,9 +1,9 @@
 module github.com/clearcompass-ai/ortholog-artifact-store
 
-go 1.22
+go 1.25.7
 
 require (
-	github.com/clearcompass-ai/ortholog-sdk v0.1.0
+	github.com/clearcompass-ai/ortholog-sdk v0.0.0-20260425034242-d6b979284a64
 	github.com/testcontainers/testcontainers-go v0.31.0
 	go.uber.org/goleak v1.3.0
 )
@@ -13,10 +13,13 @@ require (
 	github.com/Azure/go-ansiterm v0.0.0-20210617225240-d185dfc1b5a1 // indirect
 	github.com/Microsoft/go-winio v0.6.1 // indirect
 	github.com/Microsoft/hcsshim v0.11.4 // indirect
+	github.com/bits-and-blooms/bitset v1.24.4 // indirect
 	github.com/cenkalti/backoff/v4 v4.2.1 // indirect
+	github.com/consensys/gnark-crypto v0.20.1 // indirect
 	github.com/containerd/containerd v1.7.15 // indirect
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/cpuguy83/dockercfg v0.3.1 // indirect
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
 	github.com/distribution/reference v0.5.0 // indirect
 	github.com/docker/docker v25.0.5+incompatible // indirect
 	github.com/docker/go-connections v0.5.0 // indirect
@@ -50,10 +53,11 @@ require (
 	go.opentelemetry.io/otel v1.24.0 // indirect
 	go.opentelemetry.io/otel/metric v1.24.0 // indirect
 	go.opentelemetry.io/otel/trace v1.24.0 // indirect
-	golang.org/x/crypto v0.31.0 // indirect
-	golang.org/x/mod v0.16.0 // indirect
-	golang.org/x/sys v0.28.0 // indirect
-	golang.org/x/tools v0.13.0 // indirect
+	golang.org/x/crypto v0.50.0 // indirect
+	golang.org/x/mod v0.35.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
+	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/tools v0.44.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20230731190214-cbb8c96f2d6d // indirect
 	google.golang.org/grpc v1.58.3 // indirect
 	google.golang.org/protobuf v1.33.0 // indirect
@@ -62,6 +66,3 @@ require (
 // testcontainers-go pulls in the Docker SDK + its transitive deps.
 // `go mod tidy` populates indirect requires on first build.
 // Pinned to v0.31.x — compatible with Docker API 1.41+.
-
-// Development: SDK from local workspace. Remove for release.
-replace github.com/clearcompass-ai/ortholog-sdk => ../ortholog-sdk

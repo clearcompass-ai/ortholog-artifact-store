@@ -9,8 +9,9 @@ import (
 )
 
 // TestMain is shared by every test in the backends package. goleak
-// catches dangling goroutines — especially important for mirrored.go's
-// asyncPinWorker, which is the only goroutine-owning backend.
+// catches any dangling goroutine in any backend implementation. None
+// of the supported object-store backends own background goroutines
+// today; goleak stays plumbed in as a forward guard.
 func TestMain(m *testing.M) {
 	testutil.RunWithGoleak(m)
 }
@@ -65,5 +66,68 @@ func TestInMemoryBackend_RoundTrip(t *testing.T) {
 	}
 	if !bytes.Equal(got, data) {
 		t.Fatal("round-trip byte mismatch")
+	}
+}
+
+// TestInMemoryBackend_Exists pins the Exists contract in both
+// directions — true after Push, false before Push.
+func TestInMemoryBackend_Exists(t *testing.T) {
+	b := NewInMemoryBackend()
+	data := []byte("exists-check")
+	cid := storage.Compute(data)
+
+	if exists, err := b.Exists(cid); err != nil || exists {
+		t.Fatalf("Exists before Push: want (false, nil), got (%v, %v)", exists, err)
+	}
+	if err := b.Push(cid, data); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	if exists, err := b.Exists(cid); err != nil || !exists {
+		t.Fatalf("Exists after Push: want (true, nil), got (%v, %v)", exists, err)
+	}
+}
+
+// TestInMemoryBackend_Pin pins the Pin contract: nil on a CID that
+// exists, ErrContentNotFound on a CID that doesn't. The SDK's
+// InMemoryContentStore is what enforces this; the wrapper just
+// delegates.
+func TestInMemoryBackend_Pin(t *testing.T) {
+	b := NewInMemoryBackend()
+	data := []byte("pin-check")
+	cid := storage.Compute(data)
+
+	if err := b.Pin(cid); err == nil {
+		t.Fatal("Pin on missing CID: want error, got nil")
+	}
+
+	if err := b.Push(cid, data); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	if err := b.Pin(cid); err != nil {
+		t.Fatalf("Pin on existing CID: %v", err)
+	}
+}
+
+// TestInMemoryBackend_Delete pins the Delete contract: bytes are
+// gone after Delete, and a subsequent Fetch returns
+// ErrContentNotFound. Delete on a missing CID is tolerant (no error)
+// per the SDK reference impl.
+func TestInMemoryBackend_Delete(t *testing.T) {
+	b := NewInMemoryBackend()
+	data := []byte("delete-check")
+	cid := storage.Compute(data)
+
+	if err := b.Delete(cid); err != nil {
+		t.Fatalf("Delete on missing CID should be tolerant: %v", err)
+	}
+
+	if err := b.Push(cid, data); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	if err := b.Delete(cid); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if exists, _ := b.Exists(cid); exists {
+		t.Fatal("Exists after Delete: want false, got true")
 	}
 }

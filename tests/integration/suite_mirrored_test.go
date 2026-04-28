@@ -13,28 +13,28 @@ import (
 	"github.com/clearcompass-ai/ortholog-sdk/storage"
 )
 
-// TestMirrored_MinIO_And_FakeGCS exercises the MirroredStore decorator
+// TestMirrored_RustFS_And_FakeGCS exercises the MirroredStore decorator
 // in sync mode across two real backends with completely different wire
 // protocols. Every Push must land in both; a Fetch must fall back to
 // the mirror when the primary is unavailable. Wave 1 tests this with
 // an in-memory scripted backend; Wave 2 validates the behavior holds
 // against heterogeneous real protocols.
-func TestMirrored_MinIO_And_FakeGCS(t *testing.T) {
+func TestMirrored_RustFS_And_FakeGCS(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	m := containers.StartMinIO(t, ctx)
+	r := containers.StartRustFS(t, ctx)
 	fg := containers.StartFakeGCS(t, ctx)
 
-	primary := backends.NewS3Backend(backends.S3Config{
-		Endpoint:  m.Endpoint,
-		Bucket:    m.Bucket,
-		Region:    m.Region,
+	primary := backends.NewRustFSBackend(backends.RustFSConfig{
+		Endpoint:  r.Endpoint,
+		Bucket:    r.Bucket,
+		Region:    r.Region,
 		Prefix:    randomPrefix(t),
 		PathStyle: true,
 		RequestSigner: &containers.SigV4Signer{
-			AccessKey: m.AccessKey, SecretKey: m.SecretKey,
-			Region: m.Region, Service: "s3",
+			AccessKey: r.AccessKey, SecretKey: r.SecretKey,
+			Region: r.Region, Service: "s3",
 		},
 	})
 	mirror := backends.NewGCSBackend(backends.GCSConfig{
@@ -58,7 +58,7 @@ func TestMirrored_MinIO_And_FakeGCS(t *testing.T) {
 	// Both backends must independently hold the bytes — this is the
 	// core MirroredStore invariant.
 	for name, b := range map[string]backends.BackendProvider{
-		"primary (MinIO)":  primary,
+		"primary (RustFS)": primary,
 		"mirror (FakeGCS)": mirror,
 	} {
 		got, err := b.Fetch(cid)

@@ -13,10 +13,9 @@
 #   - Coverage drops below 80% per package
 #
 # What this does NOT catch (covered in other workflows):
-#   - Vendor-specific quirks (nightly.yml against real cloud, Wave 3)
+#   - Vendor-specific quirks (staging.yml against real cloud, Wave 3)
 #   - Flaky tests that fail only on 2nd run (flake-detect.yml, weekly)
-#   - Crash paths in parsers (fuzz.yml, weekly)
-#   - Container-orchestration bugs (ci.yml + integration tests, Wave 2)
+#   - Container-orchestration bugs (integration.yml, Wave 2)
 # ============================================================================
 
 name: ci
@@ -37,7 +36,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: "1.22"
+  GO_VERSION: "1.25.7"
 
 jobs:
   lint:
@@ -83,7 +82,18 @@ jobs:
       - name: build
         run: go build ./...
 
-      - name: test with race detector
+      # v7.75 SDK alignment audit gate. Verifies the artifact store
+      # consumes the SDK contract correctly (toolchain, algorithm-agile
+      # cid.Verify, CID.Bytes() wire form across every object-store
+      # backend, kid-keyed upload-token verifier through SDK
+      # signatures.VerifyEd25519). Defined in Makefile; runs in this
+      # same job before the coverage gate so a failure surfaces as
+      # "alignment regression," not "test flake." See docs/TESTING.md
+      # "v7.75 alignment gate" for details.
+      - name: v7.75 alignment gate
+        run: make audit-v775-consumer
+
+      - name: test with race detector (coverage profile)
         run: go test -race -count=1 -timeout=60s -coverprofile=coverage.out ./...
 
       # Coverage gate. Fails the job if any non-cmd package < 80%.
@@ -99,24 +109,9 @@ jobs:
           path: coverage.out
           retention-days: 14
 
-  # A tiny separate job: runs the fuzz targets for a few seconds each to
-  # catch regressions. Longer runs happen weekly in fuzz.yml.
-  fuzz-smoke:
-    name: fuzz-smoke
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-
-      - name: fuzz ExtractDigestFromIPFSCID (10s)
-        run: go test -fuzz=FuzzExtractDigestFromIPFSCID -fuzztime=10s ./backends
-
-      - name: fuzz SDKCIDToIPFSPath round-trip (10s)
-        run: go test -fuzz=FuzzSDKCIDToIPFSPath_RoundTrip -fuzztime=10s ./backends
-
-      - name: fuzz ParseCID (10s)
-        run: go test -fuzz=FuzzParseCID -fuzztime=10s ./backends
+  # The pre-v7.75 fuzz-smoke job ran three FuzzXxx targets that lived in
+  # the IPFS backend's CID parser (FuzzExtractDigestFromIPFSCID,
+  # FuzzSDKCIDToIPFSPath_RoundTrip, FuzzParseCID). IPFS is no longer a
+  # supported backend kind; the targets and the weekly fuzz workflow
+  # are gone. Re-introduce a fuzz-smoke job here when a future backend
+  # or helper introduces a parser worth fuzzing.

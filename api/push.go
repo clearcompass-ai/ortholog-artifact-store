@@ -1,7 +1,6 @@
 package api
 
 import (
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -19,7 +18,11 @@ import (
 
 // PushHandler handles POST /v1/artifacts.
 // Accepts a CID (X-Artifact-CID header) plus raw body bytes.
-// Optionally verifies SHA-256(body) matches the CID digest.
+// Optionally verifies that the body hashes (under the CID's declared
+// algorithm) to the CID digest. The hash function is selected by the
+// CID's algorithm tag — SHA-256 today, whatever the SDK registers
+// tomorrow via storage.RegisterAlgorithm. The artifact store never
+// hard-codes a single hash function.
 //
 // Audit trail:
 //
@@ -30,12 +33,15 @@ import (
 //	event  = "artifact.push.rejected"
 //	reason ∈ {
 //	  "missing_cid_header",      // no X-Artifact-CID
-//	  "invalid_cid_header",      // malformed CID
+//	  "invalid_cid_header",      // malformed CID (algo unknown, bad hex, …)
 //	  "read_body_error",         // I/O error reading body
 //	  "size_exceeded",           // body > MaxBodySize
-//	  "cid_mismatch",            // SHA-256(body) != cid.Digest
+//	  "cid_mismatch",            // hash(body, cid.Algorithm) != cid.Digest
 //	  "token_required_missing",  // policy requires token, none provided
 //	  "token_invalid",           // token failed cryptographic verification
+//	  "token_unknown_kid",       // token's kid claim doesn't match any
+//	                              // operator pubkey registered with the
+//	                              // verifier (rotation in flight or fraud)
 //	  "token_cid_mismatch",      // token binds a different CID
 //	  "token_size_mismatch",     // token binds a different size
 //	  "token_expired",           // token past its exp time
@@ -44,8 +50,10 @@ import (
 //	}
 //
 // Each record also carries: remote_addr, claimed_cid, received_size,
-// max_body_size, computed_digest (on cid_mismatch), claimed_digest,
-// operator_token_kid (when a token was provided).
+// max_body_size, cid_algorithm (algorithm name from the parsed CID),
+// computed_cid (on cid_mismatch — the CID under cid.Algorithm that the
+// received bytes actually hash to), claimed_digest, operator_token_kid
+// (when a token was provided).
 //
 // Callers (SIEM/monitoring) should alert on reason ∈ {cid_mismatch,
 // size_exceeded, token_invalid, token_expired} — under normal operation
@@ -108,23 +116,30 @@ func (h *PushHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── 4. Digest verification ──────────────────────────────────
-	// Verification, not computation — the SDK computed the CID.
-	// Catches truncated uploads and bit flips before storage.
+	// Verification, not computation — the SDK computed the CID. The
+	// hash algorithm is selected by the CID's algorithm tag (parsed
+	// at step 1), so a CID minted under any algorithm registered in
+	// storage.RegisterAlgorithm verifies correctly here without code
+	// changes. ParseCID has already enforced "algorithm registered"
+	// and "digest length matches algorithm output size", so a Verify
+	// failure at this point is unambiguously a content mismatch
+	// (truncation, bit flip, claim/body disagreement).
 	if h.verify {
-		digest := sha256.Sum256(data)
-		if len(cid.Digest) != 32 || !equalBytes(digest[:], cid.Digest) {
-			h.logger.Warn("push rejected: SHA-256 digest mismatch (data corruption)",
+		if !cid.Verify(data) {
+			computedCID := storage.ComputeWith(data, cid.Algorithm)
+			h.logger.Warn("push rejected: CID digest mismatch (data corruption)",
 				"event", pushRejectedEvent,
 				"reason", "cid_mismatch",
 				"claimed_cid", cidStr,
+				"cid_algorithm", algorithmName(cid),
 				"remote_addr", r.RemoteAddr,
 				"received_size", receivedSize,
-				"computed_digest", hex.EncodeToString(digest[:]),
+				"computed_cid", computedCID.String(),
 				"claimed_digest", hex.EncodeToString(cid.Digest),
 				"operator_token_kid", tokenKid,
 			)
 			writeError(w, http.StatusBadRequest,
-				"SHA-256(body) does not match CID digest (data corruption)")
+				"body bytes do not match CID digest (data corruption)")
 			return
 		}
 	}
@@ -205,6 +220,8 @@ func (h *PushHandler) checkUploadToken(w http.ResponseWriter, r *http.Request, c
 // classifyTokenError maps sentinel token errors to stable log reasons.
 func classifyTokenError(err error) string {
 	switch {
+	case errors.Is(err, ErrTokenUnknownKid):
+		return "token_unknown_kid"
 	case errors.Is(err, ErrTokenBadSignature):
 		return "token_invalid"
 	case errors.Is(err, ErrTokenExpired):
@@ -257,15 +274,18 @@ func (h *PushHandler) rejectMalformed(w http.ResponseWriter, r *http.Request, ci
 	writeError(w, http.StatusBadRequest, userMsg)
 }
 
-// equalBytes is constant-time byte comparison for equal-length slices.
-// Unequal lengths short-circuit to false (length is not secret).
-func equalBytes(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
+// algorithmName returns the algorithm name prefix from a parsed CID's
+// canonical string form (e.g. "sha256" from "sha256:abc…"). It exists
+// solely to surface a discrete cid_algorithm field in the cid_mismatch
+// audit record, so a SIEM can alert on, group by, or break out
+// rejections per algorithm without parsing claimed_cid. The SDK does
+// not export an algorithm-tag→name lookup; cid.String() does, prefixed
+// at the first ':'. ParseCID has already validated the prefix at the
+// step-1 header parse, so the colon is guaranteed present here.
+func algorithmName(c storage.CID) string {
+	s := c.String()
+	if i := strings.IndexByte(s, ':'); i > 0 {
+		return s[:i]
 	}
-	var mismatch byte
-	for i := range a {
-		mismatch |= a[i] ^ b[i]
-	}
-	return mismatch == 0
+	return ""
 }

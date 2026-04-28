@@ -22,14 +22,10 @@ type Config struct {
 	PathStyle bool
 	Prefix    string
 
-	IPFSGateway     string
-	IPFSBearerToken string
-
-	MirrorBackend     string
-	MirrorEndpoint    string
-	MirrorBucket      string
-	MirrorBearerToken string
-	MirrorMode        string
+	MirrorBackend  string
+	MirrorEndpoint string
+	MirrorBucket   string
+	MirrorMode     string
 
 	VerifyOnPush bool
 
@@ -46,11 +42,22 @@ type Config struct {
 	//   "required" — reject pushes without a valid token
 	RequireUploadToken string
 
-	// OperatorPublicKey is the Ed25519 public key of the operator that
-	// signs upload tokens. Accepted encodings: PEM, hex (64 chars),
-	// base64 (≈44 chars). Required when RequireUploadToken != "off".
-	OperatorPublicKey     string
-	OperatorPublicKeyFile string // alternative to OperatorPublicKey
+	// OperatorPubKeys is the kid-keyed Ed25519 public-key list of the
+	// operators that sign upload tokens. Format:
+	//   kid1:<encoded>,kid2:<encoded>
+	// where <encoded> is one of PEM, hex (64 chars), or base64 (≈44
+	// chars). The kid may be empty (":<encoded>") for single-key
+	// deployments whose tokens omit the kid claim.
+	//
+	// Required when RequireUploadToken != "off" (unless
+	// OperatorPubKeysDir is set instead).
+	OperatorPubKeys string
+
+	// OperatorPubKeysDir is an alternative to OperatorPubKeys: a
+	// directory containing one PEM file per kid. Filename minus the
+	// .pem extension is the kid. Mutually exclusive with
+	// OperatorPubKeys.
+	OperatorPubKeysDir string
 
 	DefaultResolveExpiry time.Duration
 
@@ -67,19 +74,16 @@ func Load() (*Config, error) {
 		Region:               envOrDefault("ARTIFACT_REGION", "us-east-1"),
 		PathStyle:            envBool("ARTIFACT_PATH_STYLE", false),
 		Prefix:               os.Getenv("ARTIFACT_PREFIX"),
-		IPFSGateway:          envOrDefault("ARTIFACT_IPFS_GATEWAY", "https://ipfs.io"),
-		IPFSBearerToken:      os.Getenv("ARTIFACT_IPFS_BEARER_TOKEN"),
 		MirrorBackend:        os.Getenv("ARTIFACT_MIRROR_BACKEND"),
 		MirrorEndpoint:       os.Getenv("ARTIFACT_MIRROR_ENDPOINT"),
 		MirrorBucket:         os.Getenv("ARTIFACT_MIRROR_BUCKET"),
-		MirrorBearerToken:    os.Getenv("ARTIFACT_MIRROR_BEARER_TOKEN"),
 		MirrorMode:           envOrDefault("ARTIFACT_MIRROR_MODE", "sync"),
-		VerifyOnPush:          envBool("ARTIFACT_VERIFY_ON_PUSH", true),
-		Env:                   envOrDefault("ORTHOLOG_ENV", "dev"),
-		RequireUploadToken:    envOrDefault("ARTIFACT_REQUIRE_UPLOAD_TOKEN", "off"),
-		OperatorPublicKey:     os.Getenv("ARTIFACT_OPERATOR_PUBKEY"),
-		OperatorPublicKeyFile: os.Getenv("ARTIFACT_OPERATOR_PUBKEY_FILE"),
-		DefaultResolveExpiry:  envDuration("ARTIFACT_RESOLVE_EXPIRY", 3600*time.Second),
+		VerifyOnPush:         envBool("ARTIFACT_VERIFY_ON_PUSH", true),
+		Env:                  envOrDefault("ORTHOLOG_ENV", "dev"),
+		RequireUploadToken:   envOrDefault("ARTIFACT_REQUIRE_UPLOAD_TOKEN", "off"),
+		OperatorPubKeys:      os.Getenv("ARTIFACT_OPERATOR_PUBKEYS"),
+		OperatorPubKeysDir:   os.Getenv("ARTIFACT_OPERATOR_PUBKEYS_DIR"),
+		DefaultResolveExpiry: envDuration("ARTIFACT_RESOLVE_EXPIRY", 3600*time.Second),
 		ListenAddr:           envOrDefault("ARTIFACT_LISTEN_ADDR", ":8082"),
 		MaxBodySize:          envInt64("ARTIFACT_MAX_BODY_SIZE", 64<<20),
 	}
@@ -91,25 +95,25 @@ func Load() (*Config, error) {
 }
 
 func (c *Config) validate() error {
+	// Object-store backends only. The artifact store deliberately
+	// does not support content-addressed networks like IPFS — bytes
+	// in / bytes out / signed URLs out is the entire contract.
 	switch c.Backend {
-	case "gcs", "s3", "ipfs", "memory":
+	case "gcs", "rustfs", "memory":
 	default:
-		return fmt.Errorf("config: unknown backend %q (want gcs, s3, ipfs, or memory)", c.Backend)
+		return fmt.Errorf("config: unknown backend %q (want gcs, rustfs, or memory)", c.Backend)
 	}
 	if c.MirrorBackend != "" {
 		switch c.MirrorBackend {
-		case "gcs", "s3", "ipfs":
+		case "gcs", "rustfs":
 		default:
-			return fmt.Errorf("config: unknown mirror backend %q", c.MirrorBackend)
+			return fmt.Errorf("config: unknown mirror backend %q (want gcs or rustfs)", c.MirrorBackend)
 		}
 	}
-	if c.MirrorMode != "sync" && c.MirrorMode != "async_pin" {
-		return fmt.Errorf("config: unknown mirror mode %q (want sync or async_pin)", c.MirrorMode)
-	}
-	if c.MirrorMode == "async_pin" {
-		if c.MirrorBackend != "ipfs" || c.Backend != "ipfs" {
-			return fmt.Errorf("config: async_pin mode requires both primary and mirror to be ipfs")
-		}
+	// MirrorMode reserved for future expansion. The only supported
+	// mode today is "sync" — synchronous double-write.
+	if c.MirrorMode != "sync" {
+		return fmt.Errorf("config: unknown mirror mode %q (want sync)", c.MirrorMode)
 	}
 	if c.MaxBodySize <= 0 {
 		c.MaxBodySize = 64 << 20

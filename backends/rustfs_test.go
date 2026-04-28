@@ -15,57 +15,59 @@ import (
 
 // ─── Test signers ────────────────────────────────────────────────────
 
-// capturingS3Signer records every request it's asked to sign, so tests
-// can assert the backend actually invoked the signer. It always succeeds
-// — signature correctness is not the backend's responsibility.
-type capturingS3Signer struct {
+// capturingRustFSSigner records every request it's asked to sign, so
+// tests can assert the backend actually invoked the signer. It always
+// succeeds — signature correctness is not the backend's responsibility.
+type capturingRustFSSigner struct {
 	signedRequests []string // "METHOD path"
 }
 
-func (c *capturingS3Signer) SignRequest(req *http.Request) error {
+func (c *capturingRustFSSigner) SignRequest(req *http.Request) error {
 	c.signedRequests = append(c.signedRequests, req.Method+" "+req.URL.Path)
 	// Set a marker header so the fake can observe the signer ran.
 	req.Header.Set("X-Signed-By-Test", "true")
 	return nil
 }
 
-type fakeS3Presigner struct{}
+type fakeRustFSPresigner struct{}
 
-func (fakeS3Presigner) PresignGetObject(bucket, key string, expiry time.Duration) (string, error) {
+func (fakeRustFSPresigner) PresignGetObject(bucket, key string, expiry time.Duration) (string, error) {
 	return fmt.Sprintf("https://signed.example/%s/%s?e=%d",
 		bucket, key, int(expiry.Seconds())), nil
 }
 
-type brokenS3Presigner struct{}
+type brokenRustFSPresigner struct{}
 
-func (brokenS3Presigner) PresignGetObject(_, _ string, _ time.Duration) (string, error) {
+func (brokenRustFSPresigner) PresignGetObject(_, _ string, _ time.Duration) (string, error) {
 	return "", errors.New("presigner exploded")
 }
 
-// newS3BackendWithFake wires an S3Backend at the fake server's URL in
-// path-style mode with a capturing signer.
-func newS3BackendWithFake(t *testing.T, fake *testutil.S3Fake) (*S3Backend, *capturingS3Signer) {
+// newRustFSBackendWithFake wires a RustFSBackend at the protocol fake's
+// URL in path-style mode with a capturing signer. testutil.S3Fake fakes
+// the S3 wire protocol — RustFS speaks that protocol — so the same fake
+// drives every Wave 1 protocol-level test.
+func newRustFSBackendWithFake(t *testing.T, fake *testutil.S3Fake) (*RustFSBackend, *capturingRustFSSigner) {
 	t.Helper()
-	signer := &capturingS3Signer{}
-	b := NewS3Backend(S3Config{
+	signer := &capturingRustFSSigner{}
+	b := NewRustFSBackend(RustFSConfig{
 		Endpoint:      fake.URL(),
 		Bucket:        "test-bucket",
 		Region:        "us-east-1",
 		Prefix:        "artifacts/",
 		PathStyle:     true,
 		RequestSigner: signer,
-		URLSigner:     fakeS3Presigner{},
+		URLSigner:     fakeRustFSPresigner{},
 	})
 	return b, signer
 }
 
 // ─── Lifecycle tests ─────────────────────────────────────────────────
 
-func TestS3_Push_PathStyleURLAndSigned(t *testing.T) {
+func TestRustFS_Push_PathStyleURLAndSigned(t *testing.T) {
 	fake := testutil.NewS3Fake(t)
-	b, signer := newS3BackendWithFake(t, fake)
+	b, signer := newRustFSBackendWithFake(t, fake)
 
-	data := []byte("s3-push-wire")
+	data := []byte("rustfs-push-wire")
 	cid := storage.Compute(data)
 
 	if err := b.Push(cid, data); err != nil {
@@ -96,10 +98,10 @@ func TestS3_Push_PathStyleURLAndSigned(t *testing.T) {
 	}
 }
 
-func TestS3_Fetch_ReturnsBytes(t *testing.T) {
+func TestRustFS_Fetch_ReturnsBytes(t *testing.T) {
 	fake := testutil.NewS3Fake(t)
-	b, _ := newS3BackendWithFake(t, fake)
-	data := []byte("s3-fetch")
+	b, _ := newRustFSBackendWithFake(t, fake)
+	data := []byte("rustfs-fetch")
 	cid := storage.Compute(data)
 	fake.Put("test-bucket", "artifacts/"+cid.String(), data)
 
@@ -112,9 +114,9 @@ func TestS3_Fetch_ReturnsBytes(t *testing.T) {
 	}
 }
 
-func TestS3_Fetch_404MapsToErrContentNotFound(t *testing.T) {
+func TestRustFS_Fetch_404MapsToErrContentNotFound(t *testing.T) {
 	fake := testutil.NewS3Fake(t)
-	b, _ := newS3BackendWithFake(t, fake)
+	b, _ := newRustFSBackendWithFake(t, fake)
 	cid := storage.Compute([]byte("missing"))
 
 	_, err := b.Fetch(cid)
@@ -123,13 +125,13 @@ func TestS3_Fetch_404MapsToErrContentNotFound(t *testing.T) {
 	}
 }
 
-// Documented quirk: S3 treats 403 like 404 for missing objects when the
-// bucket-policy denies listing. The backend collapses both to ErrContentNotFound.
-// This test pins that behavior.
-func TestS3_Fetch_403AlsoMapsToErrContentNotFound(t *testing.T) {
+// Documented S3-protocol quirk: a 403 on object GET (bucket-policy
+// denying listing) is collapsed to ErrContentNotFound. RustFS preserves
+// the same behavior.
+func TestRustFS_Fetch_403AlsoMapsToErrContentNotFound(t *testing.T) {
 	fake := testutil.NewS3Fake(t)
 	fake.FetchStatus = http.StatusForbidden
-	b, _ := newS3BackendWithFake(t, fake)
+	b, _ := newRustFSBackendWithFake(t, fake)
 	cid := storage.Compute([]byte("forbidden"))
 
 	_, err := b.Fetch(cid)
@@ -138,9 +140,9 @@ func TestS3_Fetch_403AlsoMapsToErrContentNotFound(t *testing.T) {
 	}
 }
 
-func TestS3_Exists_HEAD(t *testing.T) {
+func TestRustFS_Exists_HEAD(t *testing.T) {
 	fake := testutil.NewS3Fake(t)
-	b, _ := newS3BackendWithFake(t, fake)
+	b, _ := newRustFSBackendWithFake(t, fake)
 	data := []byte("exists")
 	cid := storage.Compute(data)
 	fake.Put("test-bucket", "artifacts/"+cid.String(), data)
@@ -160,9 +162,9 @@ func TestS3_Exists_HEAD(t *testing.T) {
 	}
 }
 
-func TestS3_Exists_404(t *testing.T) {
+func TestRustFS_Exists_404(t *testing.T) {
 	fake := testutil.NewS3Fake(t)
-	b, _ := newS3BackendWithFake(t, fake)
+	b, _ := newRustFSBackendWithFake(t, fake)
 
 	exists, err := b.Exists(storage.Compute([]byte("nope")))
 	if err != nil {
@@ -173,9 +175,9 @@ func TestS3_Exists_404(t *testing.T) {
 	}
 }
 
-func TestS3_Pin_UsesTaggingSubresource(t *testing.T) {
+func TestRustFS_Pin_UsesTaggingSubresource(t *testing.T) {
 	fake := testutil.NewS3Fake(t)
-	b, _ := newS3BackendWithFake(t, fake)
+	b, _ := newRustFSBackendWithFake(t, fake)
 	data := []byte("pin")
 	cid := storage.Compute(data)
 	fake.Put("test-bucket", "artifacts/"+cid.String(), data)
@@ -202,9 +204,9 @@ func TestS3_Pin_UsesTaggingSubresource(t *testing.T) {
 	}
 }
 
-func TestS3_Delete(t *testing.T) {
+func TestRustFS_Delete(t *testing.T) {
 	fake := testutil.NewS3Fake(t)
-	b, _ := newS3BackendWithFake(t, fake)
+	b, _ := newRustFSBackendWithFake(t, fake)
 	data := []byte("delete")
 	cid := storage.Compute(data)
 	fake.Put("test-bucket", "artifacts/"+cid.String(), data)
@@ -218,18 +220,18 @@ func TestS3_Delete(t *testing.T) {
 	}
 }
 
-func TestS3_Healthy_OK(t *testing.T) {
+func TestRustFS_Healthy_OK(t *testing.T) {
 	fake := testutil.NewS3Fake(t)
-	b, _ := newS3BackendWithFake(t, fake)
+	b, _ := newRustFSBackendWithFake(t, fake)
 	if err := b.Healthy(); err != nil {
 		t.Fatalf("Healthy: %v", err)
 	}
 }
 
-func TestS3_Healthy_5xxReturnsError(t *testing.T) {
+func TestRustFS_Healthy_5xxReturnsError(t *testing.T) {
 	fake := testutil.NewS3Fake(t)
 	fake.HealthyStatus = http.StatusInternalServerError
-	b, _ := newS3BackendWithFake(t, fake)
+	b, _ := newRustFSBackendWithFake(t, fake)
 	if err := b.Healthy(); err == nil {
 		t.Fatal("Healthy 500: want error, got nil")
 	}
@@ -237,9 +239,9 @@ func TestS3_Healthy_5xxReturnsError(t *testing.T) {
 
 // ─── Resolve ─────────────────────────────────────────────────────────
 
-func TestS3_Resolve_ReturnsMethodSignedURL(t *testing.T) {
+func TestRustFS_Resolve_ReturnsMethodSignedURL(t *testing.T) {
 	fake := testutil.NewS3Fake(t)
-	b, _ := newS3BackendWithFake(t, fake)
+	b, _ := newRustFSBackendWithFake(t, fake)
 	cid := storage.Compute([]byte("resolve"))
 
 	cred, err := b.Resolve(cid, 1800*time.Second)
@@ -257,19 +259,19 @@ func TestS3_Resolve_ReturnsMethodSignedURL(t *testing.T) {
 	}
 }
 
-func TestS3_Resolve_NoSignerReturnsError(t *testing.T) {
-	b := NewS3Backend(S3Config{Bucket: "t", Region: "us-east-1", Endpoint: "http://unused"})
+func TestRustFS_Resolve_NoSignerReturnsError(t *testing.T) {
+	b := NewRustFSBackend(RustFSConfig{Bucket: "t", Region: "us-east-1", Endpoint: "http://unused"})
 	_, err := b.Resolve(storage.Compute([]byte("x")), time.Hour)
 	if err == nil {
 		t.Fatal("Resolve without signer: want error, got nil")
 	}
 }
 
-func TestS3_Resolve_SignerErrorPropagates(t *testing.T) {
-	b := NewS3Backend(S3Config{
+func TestRustFS_Resolve_SignerErrorPropagates(t *testing.T) {
+	b := NewRustFSBackend(RustFSConfig{
 		Bucket: "t", Region: "us-east-1",
 		Endpoint:  "http://unused",
-		URLSigner: brokenS3Presigner{},
+		URLSigner: brokenRustFSPresigner{},
 	})
 	_, err := b.Resolve(storage.Compute([]byte("x")), time.Hour)
 	if err == nil {
@@ -277,16 +279,5 @@ func TestS3_Resolve_SignerErrorPropagates(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "presigner exploded") {
 		t.Fatalf("presigner error not propagated: %v", err)
-	}
-}
-
-// ─── Endpoint computation ────────────────────────────────────────────
-
-func TestS3_DefaultEndpoint_ComputedFromRegion(t *testing.T) {
-	// When Endpoint is empty, the backend should compute
-	// https://s3.{region}.amazonaws.com.
-	b := NewS3Backend(S3Config{Bucket: "t", Region: "eu-west-2"})
-	if !strings.Contains(b.cfg.Endpoint, "s3.eu-west-2.amazonaws.com") {
-		t.Fatalf("default endpoint wrong: %s", b.cfg.Endpoint)
 	}
 }

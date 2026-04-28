@@ -87,19 +87,17 @@ lint-all: lint ## lint + golangci-lint for everything else.
 	}
 	golangci-lint run --timeout=2m
 
-# ─── Fuzz ────────────────────────────────────────────────────────────
-
-.PHONY: fuzz
-fuzz: ## Run fuzz targets for 30 seconds each (CI setting).
-	$(GO) test -fuzz=FuzzExtractDigestFromIPFSCID -fuzztime=30s ./backends
-	$(GO) test -fuzz=FuzzSDKCIDToIPFSPath_RoundTrip -fuzztime=30s ./backends
-	$(GO) test -fuzz=FuzzParseCID -fuzztime=30s ./backends
-
-.PHONY: fuzz-long
-fuzz-long: ## Run fuzz targets for 5 minutes each (weekly CI setting).
-	$(GO) test -fuzz=FuzzExtractDigestFromIPFSCID -fuzztime=5m ./backends
-	$(GO) test -fuzz=FuzzSDKCIDToIPFSPath_RoundTrip -fuzztime=5m ./backends
-	$(GO) test -fuzz=FuzzParseCID -fuzztime=5m ./backends
+# ─── Fuzz (no targets currently) ─────────────────────────────────────
+#
+# The pre-v7.75 fuzz targets (FuzzExtractDigestFromIPFSCID,
+# FuzzSDKCIDToIPFSPath_RoundTrip, FuzzParseCID) lived in the IPFS
+# backend's CID parser. IPFS is no longer a supported backend kind;
+# the targets and the weekly fuzz workflow (.github/workflows/fuzz.yml)
+# are gone with it.
+#
+# When a future backend or helper introduces a new parser worth
+# fuzzing, re-add a `fuzz` target here pointing at the relevant
+# Fuzz<Name> function and re-add the weekly workflow that mirrors it.
 
 # ─── Flake detection ─────────────────────────────────────────────────
 
@@ -111,6 +109,49 @@ flake: ## Run full test suite 50x; report any failure. Expects 0 flakes.
 
 .PHONY: test-all
 test-all: lint test coverage-gate ## Everything that runs in per-PR CI.
+
+# ─── v7.75 SDK alignment audit gate ──────────────────────────────────
+#
+# audit-v775-consumer is the per-release alignment gate. It runs every
+# verification the artifact-store can do as a v7.75 SDK consumer
+# without requiring Docker or cloud credentials:
+#
+#   1. go build ./...                         — module + SDK pin compiles
+#   2. go vet ./...                           — toolchain alignment
+#   3. go vet -tags=integration ./tests/...   — Wave 2 builds even
+#                                                without Docker
+#   4. go vet -tags=staging     ./tests/...   — Wave 3 builds without
+#                                                cloud creds
+#   5. go test -race -count=1 ./...           — Wave 1 unit + conformance
+#      includes:
+#        - api/push_algorithm_agile_test.go   Part 2 (cid.Verify
+#                                              algorithm-agile)
+#        - tests/conformance/scenarios_cid_   Part 3 (CID.Bytes() wire
+#          wire.go                             form across every
+#                                              object-store backend)
+#        - api/token_test.go kid-dispatch     Part 4 (kid-keyed verifier
+#                                              + SDK signatures.Verify
+#                                              Ed25519)
+#        - api/push_token_test.go rotation    Part 4 (operator key
+#                                              rotation window)
+#
+# A passing make audit-v775-consumer is the CI signal that the
+# artifact-store correctly consumes SDK v7.75 across every layer.
+.PHONY: audit-v775-consumer
+audit-v775-consumer: ## v7.75 alignment gate (build + vet + Wave 1 tests; no Docker required).
+	@echo "==> v7.75 alignment gate"
+	@echo "--> go build ./..."
+	@$(GO) build ./...
+	@echo "--> go vet ./..."
+	@$(GO) vet ./...
+	@echo "--> go vet -tags=integration ./tests/integration/..."
+	@$(GO) vet -tags=integration ./tests/integration/...
+	@echo "--> go vet -tags=staging ./tests/staging/..."
+	@$(GO) vet -tags=staging ./tests/staging/...
+	@echo "--> go test -race -count=1 ./..."
+	@$(GO) test -race -count=1 -timeout=120s $(PKGS)
+	@echo
+	@echo "==> v7.75 alignment gate PASSED"
 
 .PHONY: clean
 clean: ## Remove coverage artifacts.

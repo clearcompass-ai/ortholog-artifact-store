@@ -12,6 +12,13 @@ import (
 
 // fetchURLBytes performs a plain GET with no auth and returns the body.
 // Used by presigned-URL tests — the URL itself carries authorization.
+//
+// Pre-v7.75 this file also exported fetchURLBytesEventual for the
+// Filebase-IPFS staging suite (eventual-consistency retry around
+// gateway propagation). IPFS is no longer a supported backend kind;
+// the helper went with the suite. Object-store signed URLs in the
+// remaining Wave 3 path are immediately consistent — fetchURLBytes
+// alone covers them.
 func fetchURLBytes(ctx context.Context, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -28,30 +35,4 @@ func fetchURLBytes(ctx context.Context, url string) ([]byte, error) {
 		return nil, fmt.Errorf("GET %s: HTTP %d: %s", url, resp.StatusCode, body)
 	}
 	return io.ReadAll(resp.Body)
-}
-
-// fetchURLBytesEventual retries with backoff for eventually-consistent
-// endpoints (IPFS gateways need time to propagate newly-pinned content).
-//
-//	maxAttempts: total attempts before giving up
-//	baseDelay:   seconds to wait before retry 1; doubles each attempt
-func fetchURLBytesEventual(ctx context.Context, url string, maxAttempts, baseDelay int) ([]byte, error) {
-	var lastErr error
-	delay := time.Duration(baseDelay) * time.Second
-	for i := 0; i < maxAttempts; i++ {
-		b, err := fetchURLBytes(ctx, url)
-		if err == nil {
-			return b, nil
-		}
-		lastErr = err
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(delay):
-		}
-		if delay < 30*time.Second {
-			delay *= 2
-		}
-	}
-	return nil, fmt.Errorf("exhausted %d attempts: %w", maxAttempts, lastErr)
 }

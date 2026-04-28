@@ -38,8 +38,11 @@ func newScriptedBackend() *scriptedBackend {
 	return &scriptedBackend{inner: NewInMemoryBackend()}
 }
 
-func (s *scriptedBackend) setPushErr(err error)  { s.mu.Lock(); s.pushErr = err; s.mu.Unlock() }
-func (s *scriptedBackend) setFetchErr(err error) { s.mu.Lock(); s.fetchErr = err; s.mu.Unlock() }
+func (s *scriptedBackend) setPushErr(err error)   { s.mu.Lock(); s.pushErr = err; s.mu.Unlock() }
+func (s *scriptedBackend) setFetchErr(err error)  { s.mu.Lock(); s.fetchErr = err; s.mu.Unlock() }
+func (s *scriptedBackend) setExistsErr(err error) { s.mu.Lock(); s.existsErr = err; s.mu.Unlock() }
+func (s *scriptedBackend) setPinErr(err error)    { s.mu.Lock(); s.pinErr = err; s.mu.Unlock() }
+func (s *scriptedBackend) setDeleteErr(err error) { s.mu.Lock(); s.deleteErr = err; s.mu.Unlock() }
 
 func (s *scriptedBackend) Push(cid storage.CID, data []byte) error {
 	s.mu.Lock()
@@ -344,99 +347,45 @@ func TestMirrored_Sync_ConcurrentPush(t *testing.T) {
 	}
 }
 
-// ─── Async mode ──────────────────────────────────────────────────────
 
-// waitForPushCount polls until the scripted backend's pushCount reaches
-// want, or the deadline expires. Used to observe eventual-consistency
-// effects in async mode without time.Sleep guessing.
-func waitForPushCount(t *testing.T, s *scriptedBackend, want int, deadline time.Duration) {
-	t.Helper()
-	end := time.Now().Add(deadline)
-	for time.Now().Before(end) {
-		s.mu.Lock()
-		got := s.pushCount
-		s.mu.Unlock()
-		if got >= want {
-			return
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	s.mu.Lock()
-	got := s.pushCount
-	s.mu.Unlock()
-	t.Fatalf("mirror pushCount: want ≥%d within %v, got %d", want, deadline, got)
-}
+// ─── Sync mode is the only supported mode ────────────────────────────
 
-func TestMirrored_AsyncPin_PrimaryImmediateMirrorEventual(t *testing.T) {
-	primary := newScriptedBackend()
-	mirror := newScriptedBackend()
-	ms := NewMirroredStore(primary, mirror, MirroredConfig{Mode: MirrorModeAsyncPin, Logger: quietLogger()})
+func TestMirrored_DefaultModeIsSync(t *testing.T) {
+	// MirroredConfig{} (zero-value Mode) must produce a working sync
+	// mirror. The pre-v7.75 async_pin mode targeted IPFS-IPFS
+	// replication and is gone now that IPFS is no longer a supported
+	// backend kind; sync is the only mode.
+	ms := NewMirroredStore(newScriptedBackend(), newScriptedBackend(), MirroredConfig{})
 	t.Cleanup(ms.Close)
 
-	data := []byte("async-pin")
+	data := []byte("default-mode")
+	cid := storage.Compute(data)
+	if err := ms.Push(cid, data); err != nil {
+		t.Fatalf("Push under default (sync) mode: %v", err)
+	}
+}
+
+func TestMirrored_UnknownModeFallsBackToSync(t *testing.T) {
+	// An unknown Mode string must NOT crash and must not silently
+	// degrade to a different semantics — it falls back to sync with a
+	// warning so misconfiguration is visible without breaking the
+	// service.
+	primary := newScriptedBackend()
+	mirror := newScriptedBackend()
+	ms := NewMirroredStore(primary, mirror, MirroredConfig{
+		Mode:   "this-mode-does-not-exist",
+		Logger: quietLogger(),
+	})
+	t.Cleanup(ms.Close)
+
+	data := []byte("unknown-mode")
 	cid := storage.Compute(data)
 	if err := ms.Push(cid, data); err != nil {
 		t.Fatalf("Push: %v", err)
 	}
-
-	// Primary was written synchronously.
-	if primary.pushCount != 1 {
-		t.Fatalf("primary pushCount: want 1, got %d", primary.pushCount)
-	}
-	// Mirror is eventual — wait for the async worker.
-	waitForPushCount(t, mirror, 1, 2*time.Second)
-}
-
-// TestMirrored_AsyncPin_CloseIsClean verifies the async worker terminates
-// on Close — no goroutine leak. goleak in TestMain catches the failure.
-func TestMirrored_AsyncPin_CloseIsClean(t *testing.T) {
-	primary := newScriptedBackend()
-	mirror := newScriptedBackend()
-	ms := NewMirroredStore(primary, mirror, MirroredConfig{Mode: MirrorModeAsyncPin, Logger: quietLogger()})
-
-	data := []byte("x")
-	cid := storage.Compute(data)
-	if err := ms.Push(cid, data); err != nil {
-		t.Fatal(err)
-	}
-	waitForPushCount(t, mirror, 1, 2*time.Second)
-
-	// Close stops the worker. goleak in TestMain verifies no goroutine
-	// survived the test binary's exit.
-	ms.Close()
-
-	// Small pause for the goroutine to actually exit before TestMain
-	// runs goleak.Find. In practice, goleak has its own short retry.
-	time.Sleep(50 * time.Millisecond)
-}
-
-func TestMirrored_AsyncPin_InvalidConfigStillRequires_Close(t *testing.T) {
-	// This test protects against a regression where someone forgets
-	// to call Close in async mode and leaks the goroutine. Intentionally
-	// does NOT defer Close → goleak must still pass because we call
-	// Close manually below.
-	primary := newScriptedBackend()
-	mirror := newScriptedBackend()
-	ms := NewMirroredStore(primary, mirror, MirroredConfig{Mode: MirrorModeAsyncPin, Logger: quietLogger()})
-	// (no t.Cleanup for ms.Close on purpose)
-
-	ms.Close() // explicit
-
-	// Re-assert to keep test meaningful.
-	time.Sleep(20 * time.Millisecond)
-}
-
-// ─── Default mode and nil logger fallback ────────────────────────────
-
-func TestMirrored_DefaultModeIsSync(t *testing.T) {
-	ms := NewMirroredStore(newScriptedBackend(), newScriptedBackend(), MirroredConfig{})
-	t.Cleanup(ms.Close)
-	if ms.mode != MirrorModeSync {
-		t.Fatalf("default mode: want %s, got %s", MirrorModeSync, ms.mode)
-	}
-	// pinCh should be nil in sync mode — no background goroutine.
-	if ms.pinCh != nil {
-		t.Fatal("sync mode must not allocate pinCh")
+	if primary.pushCount != 1 || mirror.pushCount != 1 {
+		t.Fatalf("unknown mode should still write both: primary=%d mirror=%d",
+			primary.pushCount, mirror.pushCount)
 	}
 }
 
@@ -453,5 +402,236 @@ func TestMirrored_NilLoggerFallback(t *testing.T) {
 	// Must not panic even though the mirror failure triggers a Warn log.
 	if err := ms.Push(cid, data); err != nil {
 		t.Fatalf("Push with nil logger: %v", err)
+	}
+}
+
+// ─── Close (no-op safety) ────────────────────────────────────────────
+
+// TestMirrored_Close_IsNoOp guards the Close contract: it must be safe
+// to call zero, one, or many times. The pre-v7.75 async-pin worker
+// owned a goroutine that Close shut down; the current sync-only mirror
+// has no background work and Close is a no-op for source compatibility.
+func TestMirrored_Close_IsNoOp(t *testing.T) {
+	ms := NewMirroredStore(newScriptedBackend(), newScriptedBackend(), MirroredConfig{Logger: quietLogger()})
+	ms.Close()
+	ms.Close() // double-Close must not panic
+}
+
+// ─── Pin (both backends, fail-tolerant on mirror) ────────────────────
+
+func TestMirrored_Pin_BothBackendsCalled(t *testing.T) {
+	primary := newScriptedBackend()
+	mirror := newScriptedBackend()
+	ms := NewMirroredStore(primary, mirror, MirroredConfig{Logger: quietLogger()})
+	t.Cleanup(ms.Close)
+
+	data := []byte("pin-both")
+	cid := storage.Compute(data)
+	// Pre-populate so InMemoryBackend.Pin succeeds.
+	if err := primary.inner.Push(cid, data); err != nil {
+		t.Fatalf("primary inner Push: %v", err)
+	}
+	if err := mirror.inner.Push(cid, data); err != nil {
+		t.Fatalf("mirror inner Push: %v", err)
+	}
+
+	if err := ms.Pin(cid); err != nil {
+		t.Fatalf("Pin: %v", err)
+	}
+}
+
+func TestMirrored_Pin_MirrorFailure_NonFatal(t *testing.T) {
+	primary := newScriptedBackend()
+	mirror := newScriptedBackend()
+	mirror.setPinErr(errors.New("mirror pin down"))
+	ms := NewMirroredStore(primary, mirror, MirroredConfig{Logger: quietLogger()})
+	t.Cleanup(ms.Close)
+
+	data := []byte("pin-mirror-fail")
+	cid := storage.Compute(data)
+	if err := primary.inner.Push(cid, data); err != nil {
+		t.Fatal(err)
+	}
+
+	// The error returned is the primary's; mirror failure is a Warn.
+	if err := ms.Pin(cid); err != nil {
+		t.Fatalf("Pin: want primary nil despite mirror failure, got %v", err)
+	}
+}
+
+func TestMirrored_Pin_PrimaryFailure_Surfaced(t *testing.T) {
+	primary := newScriptedBackend()
+	mirror := newScriptedBackend()
+	primary.setPinErr(errors.New("primary pin failed"))
+	ms := NewMirroredStore(primary, mirror, MirroredConfig{Logger: quietLogger()})
+	t.Cleanup(ms.Close)
+
+	cid := storage.Compute([]byte("x"))
+	err := ms.Pin(cid)
+	if err == nil {
+		t.Fatal("Pin: want primary error surfaced, got nil")
+	}
+	if !errors.Is(err, primary.pinErr) && err.Error() != "primary pin failed" {
+		t.Fatalf("primary error not surfaced: %v", err)
+	}
+}
+
+// ─── Fetch / Exists happy paths (primary serves) ────────────────────
+
+// TestMirrored_Fetch_PrimaryServesWithoutMirror locks the happy path:
+// primary returns successfully, the mirror is never consulted. The
+// counter-part fall-through test below pins the failure-path.
+func TestMirrored_Fetch_PrimaryServesWithoutMirror(t *testing.T) {
+	primary := newScriptedBackend()
+	mirror := newScriptedBackend()
+	ms := NewMirroredStore(primary, mirror, MirroredConfig{Logger: quietLogger()})
+	t.Cleanup(ms.Close)
+
+	data := []byte("primary-only")
+	cid := storage.Compute(data)
+	// Pre-populate primary directly so push counters don't conflate.
+	if err := primary.inner.Push(cid, data); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ms.Fetch(cid)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatal("byte mismatch on primary fetch")
+	}
+	if mirror.fetchCount != 0 {
+		t.Fatalf("mirror Fetch must not be called when primary succeeds; got %d calls",
+			mirror.fetchCount)
+	}
+}
+
+// TestMirrored_Exists_PrimarySaysYes_NoMirrorCheck is the symmetric
+// happy path for Exists.
+func TestMirrored_Exists_PrimarySaysYes_NoMirrorCheck(t *testing.T) {
+	primary := newScriptedBackend()
+	mirror := newScriptedBackend()
+	ms := NewMirroredStore(primary, mirror, MirroredConfig{Logger: quietLogger()})
+	t.Cleanup(ms.Close)
+
+	data := []byte("exists-primary")
+	cid := storage.Compute(data)
+	if err := primary.inner.Push(cid, data); err != nil {
+		t.Fatal(err)
+	}
+
+	exists, err := ms.Exists(cid)
+	if err != nil {
+		t.Fatalf("Exists: %v", err)
+	}
+	if !exists {
+		t.Fatal("Exists: want true, got false")
+	}
+	if mirror.existsCount != 0 {
+		t.Fatalf("mirror Exists must not be called when primary says yes; got %d calls",
+			mirror.existsCount)
+	}
+}
+
+// ─── Fetch fall-through to mirror ────────────────────────────────────
+
+func TestMirrored_Fetch_PrimaryFails_MirrorServes(t *testing.T) {
+	primary := newScriptedBackend()
+	mirror := newScriptedBackend()
+	ms := NewMirroredStore(primary, mirror, MirroredConfig{Logger: quietLogger()})
+	t.Cleanup(ms.Close)
+
+	data := []byte("fall-through")
+	cid := storage.Compute(data)
+	// Mirror has the bytes; primary doesn't.
+	if err := mirror.inner.Push(cid, data); err != nil {
+		t.Fatal(err)
+	}
+	primary.setFetchErr(errors.New("primary down"))
+
+	got, err := ms.Fetch(cid)
+	if err != nil {
+		t.Fatalf("Fetch: want mirror to serve, got %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatal("byte mismatch: mirror should have served the original payload")
+	}
+}
+
+// ─── Exists fall-through to mirror ───────────────────────────────────
+
+func TestMirrored_Exists_PrimaryFails_MirrorAnswers(t *testing.T) {
+	primary := newScriptedBackend()
+	mirror := newScriptedBackend()
+	ms := NewMirroredStore(primary, mirror, MirroredConfig{Logger: quietLogger()})
+	t.Cleanup(ms.Close)
+
+	data := []byte("exists-fallthrough")
+	cid := storage.Compute(data)
+	if err := mirror.inner.Push(cid, data); err != nil {
+		t.Fatal(err)
+	}
+	primary.setExistsErr(errors.New("primary err"))
+
+	exists, err := ms.Exists(cid)
+	if err != nil {
+		t.Fatalf("Exists: want mirror to answer, got %v", err)
+	}
+	if !exists {
+		t.Fatal("Exists: want true (mirror has it), got false")
+	}
+}
+
+func TestMirrored_Exists_PrimaryReturnsFalse_FallsThroughToMirror(t *testing.T) {
+	// Even when primary returns (false, nil) — i.e. cleanly says "not
+	// here" — Exists falls through to the mirror, because the artifact
+	// may have landed there during a transient.
+	primary := newScriptedBackend()
+	mirror := newScriptedBackend()
+	ms := NewMirroredStore(primary, mirror, MirroredConfig{Logger: quietLogger()})
+	t.Cleanup(ms.Close)
+
+	data := []byte("only-on-mirror")
+	cid := storage.Compute(data)
+	if err := mirror.inner.Push(cid, data); err != nil {
+		t.Fatal(err)
+	}
+
+	exists, err := ms.Exists(cid)
+	if err != nil {
+		t.Fatalf("Exists: %v", err)
+	}
+	if !exists {
+		t.Fatal("Exists: want true via mirror, got false")
+	}
+}
+
+// ─── Delete (mirror failure is non-fatal, surfaces primary error) ───
+
+func TestMirrored_Delete_MirrorFailure_NonFatal(t *testing.T) {
+	primary := newScriptedBackend()
+	mirror := newScriptedBackend()
+	mirror.setDeleteErr(errors.New("mirror delete failed"))
+	ms := NewMirroredStore(primary, mirror, MirroredConfig{Logger: quietLogger()})
+	t.Cleanup(ms.Close)
+
+	cid := storage.Compute([]byte("x"))
+	if err := ms.Delete(cid); err != nil {
+		t.Fatalf("Delete: want primary nil despite mirror failure, got %v", err)
+	}
+}
+
+func TestMirrored_Delete_PrimaryFailure_Surfaced(t *testing.T) {
+	primary := newScriptedBackend()
+	mirror := newScriptedBackend()
+	primary.setDeleteErr(errors.New("primary delete failed"))
+	ms := NewMirroredStore(primary, mirror, MirroredConfig{Logger: quietLogger()})
+	t.Cleanup(ms.Close)
+
+	cid := storage.Compute([]byte("x"))
+	err := ms.Delete(cid)
+	if err == nil || err.Error() != "primary delete failed" {
+		t.Fatalf("Delete: want primary error surfaced, got %v", err)
 	}
 }

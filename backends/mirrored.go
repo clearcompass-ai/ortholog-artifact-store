@@ -1,17 +1,21 @@
 /*
 backends/mirrored.go — MirroredStore decorator.
 
-Wraps two BackendProviders. Two modes:
+Wraps two ObjectStores in synchronous double-write mode:
 
-  sync (default):
-    Push writes primary, then mirror. Primary fail = error.
-    Mirror fail = log warning (non-fatal). Both writes must
-    attempt before returning.
+  Push writes primary, then mirror. Primary fail = error.
+  Mirror fail = log warning (non-fatal). Both writes must
+  attempt before returning.
 
-  async_pin (IPFS↔IPFS only):
-    Push writes primary, returns success immediately.
-    Background goroutine pins on mirror. Mirror is eventually
-    consistent. Bounded channel prevents unbounded goroutine growth.
+Fetch tries primary first; falls back to mirror on error so the store
+keeps serving reads if one side is briefly unavailable. Exists, Pin,
+Delete, Resolve, and Healthy are propagated to one or both backends as
+appropriate (Resolve hits primary only — multiple signed URLs for the
+same artifact would just confuse downstream routing).
+
+The decorator is orthogonal to the backend kind: any pair of object
+stores satisfying BackendProvider composes — GCS+RustFS, RustFS+RustFS
+(geographically split), GCS+GCS (cross-region), etc.
 */
 package backends
 
@@ -22,11 +26,11 @@ import (
 	"github.com/clearcompass-ai/ortholog-sdk/storage"
 )
 
-// MirrorMode selects sync or async pin behavior.
-const (
-	MirrorModeSync     = "sync"
-	MirrorModeAsyncPin = "async_pin"
-)
+// MirrorMode is reserved for future expansion. The only supported
+// value today is "sync" — synchronous double-write. Pre-v7.75 drafts
+// also exposed an "async_pin" mode targeted at IPFS-IPFS replication;
+// IPFS is no longer a supported backend kind so the mode is gone.
+const MirrorModeSync = "sync"
 
 // MirroredConfig holds mirror settings.
 type MirroredConfig struct {
@@ -34,80 +38,45 @@ type MirroredConfig struct {
 	Logger *slog.Logger
 }
 
-// MirroredStore decorates two BackendProviders with double-write.
+// MirroredStore decorates two object-store BackendProviders with
+// synchronous double-write.
 type MirroredStore struct {
 	primary BackendProvider
 	mirror  BackendProvider
-	mode    string
 	logger  *slog.Logger
-	pinCh   chan pinRequest
 }
 
-type pinRequest struct {
-	cid  storage.CID
-	data []byte
-}
-
-// NewMirroredStore creates a mirrored backend.
+// NewMirroredStore creates a mirrored backend. Both arguments must
+// satisfy BackendProvider — typically two of {GCS, RustFS} or two
+// instances of the same kind in different regions.
 func NewMirroredStore(primary, mirror BackendProvider, cfg MirroredConfig) *MirroredStore {
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
-	mode := cfg.Mode
-	if mode == "" {
-		mode = MirrorModeSync
+	if cfg.Mode != "" && cfg.Mode != MirrorModeSync {
+		logger.Warn("mirror: unknown mode, defaulting to sync",
+			"mode", cfg.Mode)
 	}
-
-	ms := &MirroredStore{
+	return &MirroredStore{
 		primary: primary,
 		mirror:  mirror,
-		mode:    mode,
 		logger:  logger,
 	}
-
-	if mode == MirrorModeAsyncPin {
-		ms.pinCh = make(chan pinRequest, 1024)
-		go ms.asyncPinWorker()
-	}
-
-	return ms
 }
 
-func (m *MirroredStore) asyncPinWorker() {
-	for req := range m.pinCh {
-		if err := m.mirror.Push(req.cid, req.data); err != nil {
-			m.logger.Warn("async mirror pin failed",
-				"cid", req.cid.String(), "error", err)
-		}
-	}
-}
-
-// Close stops the async pin worker. Safe to call in sync mode (no-op).
-func (m *MirroredStore) Close() {
-	if m.pinCh != nil {
-		close(m.pinCh)
-	}
-}
+// Close is retained as a no-op for source compatibility with the
+// pre-v7.75 async-pin shape that started a goroutine in NewMirroredStore.
+// The current sync-only mirror has no background work to clean up.
+func (m *MirroredStore) Close() {}
 
 func (m *MirroredStore) Push(cid storage.CID, data []byte) error {
 	if err := m.primary.Push(cid, data); err != nil {
 		return err
 	}
-
-	switch m.mode {
-	case MirrorModeAsyncPin:
-		select {
-		case m.pinCh <- pinRequest{cid: cid, data: data}:
-		default:
-			m.logger.Warn("async pin channel full, skipping mirror",
-				"cid", cid.String())
-		}
-	default:
-		if err := m.mirror.Push(cid, data); err != nil {
-			m.logger.Warn("mirror push failed (non-fatal)",
-				"cid", cid.String(), "error", err)
-		}
+	if err := m.mirror.Push(cid, data); err != nil {
+		m.logger.Warn("mirror push failed (non-fatal)",
+			"cid", cid.String(), "error", err)
 	}
 	return nil
 }

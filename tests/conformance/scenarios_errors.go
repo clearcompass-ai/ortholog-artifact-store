@@ -19,13 +19,14 @@ func runErrors(t *testing.T, factory Factory, caps Capabilities) {
 	})
 
 	t.Run("pin_missing_returns_not_found_or_is_tolerant", func(t *testing.T) {
-		// Different backends handle pinning a missing object differently:
-		// GCS/S3 return ErrContentNotFound (the PATCH/tagging call fails).
-		// IPFS pin-add of an unpinned CID would fail (we haven't added it).
-		// InMemoryBackend returns ErrContentNotFound from its SDK impl.
-		// A backend that silently succeeds is acceptable (pin-on-missing
-		// is already an unusual call pattern) but we require consistent
-		// behavior: either nil or ErrContentNotFound, not a random error.
+		// Different object-store backends handle pinning a missing
+		// object differently: GCS / RustFS return ErrContentNotFound
+		// when the tagging API call fails; InMemoryBackend returns
+		// ErrContentNotFound from the SDK reference impl. A backend
+		// that silently succeeds is acceptable (pin-on-missing is
+		// already an unusual call pattern) but we require consistent
+		// behavior: either nil or ErrContentNotFound, not a random
+		// error.
 		b := factory()
 		cid := storage.Compute([]byte("pin-missing"))
 

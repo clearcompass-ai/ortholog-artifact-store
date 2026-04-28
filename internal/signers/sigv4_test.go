@@ -12,7 +12,7 @@ import (
 // TestSigV4_SignRequest_PopulatesHeaders is a smoke test that the signer
 // runs end-to-end: canonical-request assembly, key derivation, HMAC chain,
 // and Authorization header emission. The signature itself isn't verified
-// here (that's what Wave 2 MinIO and Wave 3 real AWS are for); we only
+// here (Wave 2 RustFS validates that against a real S3-protocol server);
 // assert the signer ran without error and produced the header set SigV4
 // consumers expect.
 func TestSigV4_SignRequest_PopulatesHeaders(t *testing.T) {

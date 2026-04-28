@@ -170,3 +170,147 @@ func TestWatchdog_CancelStopsTicker(t *testing.T) {
 		t.Fatalf("ticker kept firing after cancel: %d → %d", countAtCancel, countAfter)
 	}
 }
+
+// ─── createBackend / initBackend dispatch coverage ───────────────────
+
+func TestCreateBackend_Memory(t *testing.T) {
+	cfg := &config.Config{Backend: "memory"}
+	b, err := createBackend("memory", cfg, false, slog.Default())
+	if err != nil {
+		t.Fatalf("createBackend memory: %v", err)
+	}
+	if b == nil {
+		t.Fatal("createBackend memory returned nil")
+	}
+}
+
+func TestCreateBackend_GCS(t *testing.T) {
+	cfg := &config.Config{
+		Backend: "gcs",
+		Bucket:  "primary-bucket",
+		Prefix:  "p/",
+	}
+	b, err := createBackend("gcs", cfg, false, slog.Default())
+	if err != nil {
+		t.Fatalf("createBackend gcs: %v", err)
+	}
+	if b == nil {
+		t.Fatal("createBackend gcs returned nil")
+	}
+}
+
+func TestCreateBackend_GCS_MirrorBucketUsedWhenIsMirror(t *testing.T) {
+	cfg := &config.Config{
+		Backend:      "gcs",
+		Bucket:       "primary-bucket",
+		MirrorBucket: "mirror-bucket",
+		Prefix:       "p/",
+	}
+	// Smoke-test only: confirm createBackend with isMirror=true returns
+	// a backend without error. The bucket choice isn't externally
+	// observable on the BackendProvider surface; we just verify the
+	// dispatch branch is taken.
+	if _, err := createBackend("gcs", cfg, true, slog.Default()); err != nil {
+		t.Fatalf("createBackend gcs mirror: %v", err)
+	}
+}
+
+func TestCreateBackend_RustFS(t *testing.T) {
+	cfg := &config.Config{
+		Backend:   "rustfs",
+		Endpoint:  "http://rustfs.test:9000",
+		Bucket:    "primary-bucket",
+		Region:    "us-east-1",
+		PathStyle: true,
+	}
+	b, err := createBackend("rustfs", cfg, false, slog.Default())
+	if err != nil {
+		t.Fatalf("createBackend rustfs: %v", err)
+	}
+	if b == nil {
+		t.Fatal("createBackend rustfs returned nil")
+	}
+}
+
+func TestCreateBackend_RustFS_MirrorEndpointUsedWhenIsMirror(t *testing.T) {
+	cfg := &config.Config{
+		Backend:        "rustfs",
+		Endpoint:       "http://primary:9000",
+		MirrorEndpoint: "http://mirror:9000",
+		Bucket:         "primary-bucket",
+		MirrorBucket:   "mirror-bucket",
+		Region:         "us-east-1",
+	}
+	if _, err := createBackend("rustfs", cfg, true, slog.Default()); err != nil {
+		t.Fatalf("createBackend rustfs mirror: %v", err)
+	}
+}
+
+func TestCreateBackend_UnknownReturnsError(t *testing.T) {
+	cfg := &config.Config{}
+	if _, err := createBackend("ipfs", cfg, false, slog.Default()); err == nil {
+		t.Fatal("createBackend ipfs: want error, got nil")
+	}
+	if _, err := createBackend("nonsense", cfg, false, slog.Default()); err == nil {
+		t.Fatal("createBackend nonsense: want error, got nil")
+	}
+}
+
+// ─── initBackend (primary + optional mirror wiring) ──────────────────
+
+func TestInitBackend_PrimaryOnly(t *testing.T) {
+	cfg := &config.Config{Backend: "memory", MirrorMode: "sync"}
+	b, err := initBackend(cfg, slog.Default())
+	if err != nil {
+		t.Fatalf("initBackend: %v", err)
+	}
+	if b == nil {
+		t.Fatal("initBackend returned nil")
+	}
+}
+
+func TestInitBackend_WithMirror(t *testing.T) {
+	cfg := &config.Config{
+		Backend:       "memory",
+		MirrorBackend: "memory",
+		MirrorMode:    "sync",
+	}
+	// initBackend rejects "memory" as a mirror at the config-validate
+	// step, but this function doesn't re-validate — it just dispatches.
+	// For the wiring test, we let it construct: the Mirrored decorator
+	// wraps two InMemoryBackends. Real config validation lives in
+	// config_test.go.
+	b, err := initBackend(cfg, slog.Default())
+	if err != nil {
+		t.Fatalf("initBackend with mirror: %v", err)
+	}
+	if b == nil {
+		t.Fatal("initBackend with mirror returned nil")
+	}
+}
+
+func TestInitBackend_PrimaryConstructorFails(t *testing.T) {
+	cfg := &config.Config{Backend: "this-does-not-exist"}
+	_, err := initBackend(cfg, slog.Default())
+	if err == nil {
+		t.Fatal("initBackend with unknown primary: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "primary backend") {
+		t.Fatalf("error should name primary stage: %v", err)
+	}
+}
+
+func TestInitBackend_MirrorConstructorFails(t *testing.T) {
+	cfg := &config.Config{
+		Backend:       "memory",
+		MirrorBackend: "this-does-not-exist",
+		MirrorMode:    "sync",
+	}
+	_, err := initBackend(cfg, slog.Default())
+	if err == nil {
+		t.Fatal("initBackend with unknown mirror: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "mirror backend") {
+		t.Fatalf("error should name mirror stage: %v", err)
+	}
+}
