@@ -46,11 +46,22 @@ type Config struct {
 	//   "required" — reject pushes without a valid token
 	RequireUploadToken string
 
-	// OperatorPublicKey is the Ed25519 public key of the operator that
-	// signs upload tokens. Accepted encodings: PEM, hex (64 chars),
-	// base64 (≈44 chars). Required when RequireUploadToken != "off".
-	OperatorPublicKey     string
-	OperatorPublicKeyFile string // alternative to OperatorPublicKey
+	// OperatorPubKeys is the kid-keyed Ed25519 public-key list of the
+	// operators that sign upload tokens. Format:
+	//   kid1:<encoded>,kid2:<encoded>
+	// where <encoded> is one of PEM, hex (64 chars), or base64 (≈44
+	// chars). The kid may be empty (":<encoded>") for single-key
+	// deployments whose tokens omit the kid claim.
+	//
+	// Required when RequireUploadToken != "off" (unless
+	// OperatorPubKeysDir is set instead).
+	OperatorPubKeys string
+
+	// OperatorPubKeysDir is an alternative to OperatorPubKeys: a
+	// directory containing one PEM file per kid. Filename minus the
+	// .pem extension is the kid. Mutually exclusive with
+	// OperatorPubKeys.
+	OperatorPubKeysDir string
 
 	DefaultResolveExpiry time.Duration
 
@@ -76,9 +87,9 @@ func Load() (*Config, error) {
 		MirrorMode:           envOrDefault("ARTIFACT_MIRROR_MODE", "sync"),
 		VerifyOnPush:          envBool("ARTIFACT_VERIFY_ON_PUSH", true),
 		Env:                   envOrDefault("ORTHOLOG_ENV", "dev"),
-		RequireUploadToken:    envOrDefault("ARTIFACT_REQUIRE_UPLOAD_TOKEN", "off"),
-		OperatorPublicKey:     os.Getenv("ARTIFACT_OPERATOR_PUBKEY"),
-		OperatorPublicKeyFile: os.Getenv("ARTIFACT_OPERATOR_PUBKEY_FILE"),
+		RequireUploadToken: envOrDefault("ARTIFACT_REQUIRE_UPLOAD_TOKEN", "off"),
+		OperatorPubKeys:    os.Getenv("ARTIFACT_OPERATOR_PUBKEYS"),
+		OperatorPubKeysDir: os.Getenv("ARTIFACT_OPERATOR_PUBKEYS_DIR"),
 		DefaultResolveExpiry:  envDuration("ARTIFACT_RESOLVE_EXPIRY", 3600*time.Second),
 		ListenAddr:           envOrDefault("ARTIFACT_LISTEN_ADDR", ":8082"),
 		MaxBodySize:          envInt64("ARTIFACT_MAX_BODY_SIZE", 64<<20),

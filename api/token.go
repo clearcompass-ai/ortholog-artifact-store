@@ -1,5 +1,5 @@
 /*
-api/token.go — optional X-Upload-Token verification.
+api/token.go — kid-keyed X-Upload-Token verification.
 
 Token contract:
   The header value is a dot-separated JSON payload and signature, both
@@ -13,26 +13,45 @@ Token contract:
       "size":   <int>,              // must equal body length in bytes
       "exp":    <unix_seconds>,     // token expiration
       "iat":    <unix_seconds>,     // issued-at (optional, informational)
-      "kid":    "<key-id>"          // operator key identifier (informational)
+      "kid":    "<key-id>"          // operator key identifier — REQUIRED for
+                                    // verifier dispatch when the verifier was
+                                    // constructed with multiple keys; falls
+                                    // back to the empty-string entry for
+                                    // single-key deployments.
     }
 
   signature_bytes is the Ed25519 signature over the raw payload_json
   bytes (not the base64 encoding — sign bytes, not characters).
 
 Verification:
-  - Signature must verify against the operator's registered public key.
+  - kid → operator public key dispatch (rotation-ready). Unknown kid →
+    ErrTokenUnknownKid (audit reason "token_unknown_kid").
+  - Signature must verify against the resolved operator public key. The
+    Ed25519 primitive routes through ortholog-sdk/crypto/signatures
+    .VerifyEd25519, which length-checks the pubkey and signature before
+    invoking ed25519.Verify (Part 4 v7.75 alignment — single audited
+    primitive shared with the rest of the system).
   - Current wall-clock time must be ≤ exp.
   - Payload cid must match the X-Artifact-CID header exactly.
   - Payload size must match the actual body length.
 
-The token is single-use only implicitly — the server does not track a
-replay window. Since a token is cryptographically bound to (cid, size,
-exp) and pushes are idempotent by CID, replay is harmless: a second push
-of the same bytes is a no-op to the content-addressed store.
+The verifier is stateless — no replay window. A token bound to (cid,
+size, exp) is naturally single-meaning under a content-addressed store:
+a second push of the same bytes is a no-op. If you need stricter replay
+prevention (bounded issuance rate per key), add a nonce field plus a
+bounded LRU on the server.
 
-If you need stricter replay prevention (e.g., bounded issuance rate per
-key), add a nonce field + a bounded LRU on the server. Not done here;
-the operator already enforces upstream quotas.
+Operator key rotation:
+  The verifier accepts a map[kid] → ed25519.PublicKey at construction
+  time. During a rotation window, both the old and new operator pubkeys
+  live in the map. Tokens minted under either kid verify cleanly. Once
+  the operator confirms no in-flight tokens remain under the old kid,
+  the old entry is dropped from the map at the next process restart.
+
+  This is the only artifact-store-side machinery for operator key
+  rotation. Issuer/role-DID rotations, master identity key rotations,
+  and tree-head signing key rotations are handled at the SDK / log /
+  domain layer and never touch the artifact store.
 */
 package api
 
@@ -44,7 +63,10 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
 )
+
 // UploadTokenVerifier validates an X-Upload-Token against the expected
 // CID, size, and the current time. Implementations should return nil on
 // success; any non-nil error is logged and the push is rejected (401).
@@ -62,6 +84,16 @@ var (
 	ErrTokenCIDMismatch    = errors.New("upload token: cid mismatch")
 	ErrTokenSizeMismatch   = errors.New("upload token: size mismatch")
 	ErrTokenPayloadInvalid = errors.New("upload token: payload invalid")
+
+	// ErrTokenUnknownKid is returned when the token's `kid` claim does
+	// not match any pubkey registered with the verifier. This is the
+	// audit-distinct alternative to ErrTokenBadSignature: the signature
+	// hasn't even been checked yet, because we don't know which key to
+	// check it against. Audit pipelines should alert on
+	// reason="token_unknown_kid" as a strong signal that either an
+	// operator key rotation is mid-flight (legitimate) or someone is
+	// minting tokens with a kid the artifact store doesn't trust.
+	ErrTokenUnknownKid = errors.New("upload token: unknown kid")
 )
 
 // ─── Payload ─────────────────────────────────────────────────────────
@@ -77,18 +109,41 @@ type UploadTokenPayload struct {
 
 // ─── Ed25519 verifier ────────────────────────────────────────────────
 
-// ed25519UploadTokenVerifier implements UploadTokenVerifier against a
-// single operator public key. For multi-operator deployments, wrap this
-// in a verifier that dispatches by the payload's `kid` field; not done
-// here because OP-9 is single-operator.
+// ed25519UploadTokenVerifier dispatches verification by the token's
+// `kid` claim across a map of operator pubkeys. A single-key deployment
+// is just a one-entry map; the empty-string entry, if present, serves
+// as the fallback for tokens that omit the kid claim.
 type ed25519UploadTokenVerifier struct {
-	pubkey ed25519.PublicKey
+	keys map[string]ed25519.PublicKey
 }
 
-// NewEd25519UploadTokenVerifier returns a verifier that checks Ed25519
-// signatures against the given public key.
-func NewEd25519UploadTokenVerifier(pubkey ed25519.PublicKey) UploadTokenVerifier {
-	return &ed25519UploadTokenVerifier{pubkey: pubkey}
+// NewEd25519UploadTokenVerifier returns a verifier that selects a
+// pubkey by the token's `kid` claim and then verifies the Ed25519
+// signature via the SDK's audited primitive.
+//
+// The keys map MUST be non-nil and contain at least one entry. Each
+// pubkey MUST be exactly ed25519.PublicKeySize bytes — the SDK's
+// VerifyEd25519 length-checks at every call site, but constructing the
+// verifier with a malformed key would just defer the failure to the
+// first push attempt; reject early instead.
+//
+// Pass map["":pubkey] for a single-key deployment that doesn't issue
+// kid claims; pass map["op-2026":k1, "op-2027":k2] during a rotation
+// window where both keys must be honored simultaneously.
+func NewEd25519UploadTokenVerifier(keys map[string]ed25519.PublicKey) (UploadTokenVerifier, error) {
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("upload token verifier: keys map is empty")
+	}
+	out := make(map[string]ed25519.PublicKey, len(keys))
+	for kid, pk := range keys {
+		if len(pk) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf(
+				"upload token verifier: key %q is %d bytes, want %d (ed25519)",
+				kid, len(pk), ed25519.PublicKeySize)
+		}
+		out[kid] = pk
+	}
+	return &ed25519UploadTokenVerifier{keys: out}, nil
 }
 
 func (v *ed25519UploadTokenVerifier) Verify(token, expectedCID string, actualSize int64, now time.Time) error {
@@ -117,16 +172,29 @@ func (v *ed25519UploadTokenVerifier) Verify(token, expectedCID string, actualSiz
 		}
 	}
 
-	// Cryptographic verification first — any malformed or tampered token
-	// fails here. We refuse to inspect claims from an unsigned payload.
-	if !ed25519.Verify(v.pubkey, payloadBytes, sig) {
-		return ErrTokenBadSignature
-	}
-
-	// Decode the payload.
+	// Decode the payload BEFORE signature verification — we need `kid`
+	// to pick the pubkey. This is safe: the payload is structured JSON
+	// (a parser DoS bound by token-size limits at the HTTP layer), and
+	// nothing the unsigned payload tells us is acted on except the
+	// pubkey selection. Signature verification still gates everything
+	// downstream.
 	var p UploadTokenPayload
 	if err := json.Unmarshal(payloadBytes, &p); err != nil {
 		return fmt.Errorf("%w: json: %v", ErrTokenPayloadInvalid, err)
+	}
+
+	pubkey, ok := v.keys[p.Kid]
+	if !ok {
+		return fmt.Errorf("%w: kid=%q", ErrTokenUnknownKid, p.Kid)
+	}
+
+	// Cryptographic verification via the SDK's audited primitive.
+	// signatures.VerifyEd25519 length-checks pubkey and signature
+	// before invoking ed25519.Verify; a mismatch surfaces as a wrapped
+	// error, which we collapse to ErrTokenBadSignature so the audit
+	// pipeline sees a single, stable reason.
+	if err := signatures.VerifyEd25519(pubkey, payloadBytes, sig); err != nil {
+		return fmt.Errorf("%w: %v", ErrTokenBadSignature, err)
 	}
 
 	// Claims checks. Order matters only for the error the operator sees.

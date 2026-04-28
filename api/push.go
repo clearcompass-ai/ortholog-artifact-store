@@ -39,6 +39,9 @@ import (
 //	  "cid_mismatch",            // hash(body, cid.Algorithm) != cid.Digest
 //	  "token_required_missing",  // policy requires token, none provided
 //	  "token_invalid",           // token failed cryptographic verification
+//	  "token_unknown_kid",       // token's kid claim doesn't match any
+//	                              // operator pubkey registered with the
+//	                              // verifier (rotation in flight or fraud)
 //	  "token_cid_mismatch",      // token binds a different CID
 //	  "token_size_mismatch",     // token binds a different size
 //	  "token_expired",           // token past its exp time
@@ -217,6 +220,8 @@ func (h *PushHandler) checkUploadToken(w http.ResponseWriter, r *http.Request, c
 // classifyTokenError maps sentinel token errors to stable log reasons.
 func classifyTokenError(err error) string {
 	switch {
+	case errors.Is(err, ErrTokenUnknownKid):
+		return "token_unknown_kid"
 	case errors.Is(err, ErrTokenBadSignature):
 		return "token_invalid"
 	case errors.Is(err, ErrTokenExpired):

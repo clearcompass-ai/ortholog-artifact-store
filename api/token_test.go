@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -36,11 +37,26 @@ func newKeypair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	return pub, priv
 }
 
+// newSingleKeyVerifier registers a single (kid, pub) pair into a fresh
+// verifier. Tests that don't exercise rotation use kid="" so tokens
+// minted without a kid claim match. Tests that exercise kid dispatch
+// pass an explicit kid here and mint tokens with the same kid.
+func newSingleKeyVerifier(t *testing.T, kid string, pub ed25519.PublicKey) UploadTokenVerifier {
+	t.Helper()
+	v, err := NewEd25519UploadTokenVerifier(map[string]ed25519.PublicKey{kid: pub})
+	if err != nil {
+		t.Fatalf("NewEd25519UploadTokenVerifier: %v", err)
+	}
+	return v
+}
+
 // ─── Happy path ──────────────────────────────────────────────────────
 
 func TestToken_Verify_HappyPath(t *testing.T) {
 	pub, priv := newKeypair(t)
-	v := NewEd25519UploadTokenVerifier(pub)
+	// Token carries kid="operator-key-1"; register the pubkey under
+	// that kid so dispatch finds it.
+	v := newSingleKeyVerifier(t, "operator-key-1", pub)
 
 	now := time.Unix(1_700_000_000, 0)
 	tok := mintToken(t, priv, UploadTokenPayload{
@@ -59,9 +75,9 @@ func TestToken_Verify_HappyPath(t *testing.T) {
 // ─── Signature ───────────────────────────────────────────────────────
 
 func TestToken_Verify_BadSignature_WrongKey(t *testing.T) {
-	_, priv := newKeypair(t) // signer's key
-	otherPub, _ := newKeypair(t) // server trusts a different key
-	v := NewEd25519UploadTokenVerifier(otherPub)
+	_, priv := newKeypair(t)         // signer's key
+	otherPub, _ := newKeypair(t)     // server trusts a different key
+	v := newSingleKeyVerifier(t, "", otherPub)
 
 	now := time.Now()
 	tok := mintToken(t, priv, UploadTokenPayload{
@@ -76,7 +92,7 @@ func TestToken_Verify_BadSignature_WrongKey(t *testing.T) {
 
 func TestToken_Verify_BadSignature_PayloadTampered(t *testing.T) {
 	pub, priv := newKeypair(t)
-	v := NewEd25519UploadTokenVerifier(pub)
+	v := newSingleKeyVerifier(t, "", pub)
 
 	now := time.Now()
 	tok := mintToken(t, priv, UploadTokenPayload{
@@ -91,8 +107,11 @@ func TestToken_Verify_BadSignature_PayloadTampered(t *testing.T) {
 	tampered := base64.RawURLEncoding.EncodeToString(payloadBytes) + "." + parts[1]
 
 	err := v.Verify(tampered, "sha256:abc", 1, now)
-	if !errors.Is(err, ErrTokenBadSignature) {
-		t.Fatalf("want ErrTokenBadSignature, got %v", err)
+	// Tampering may surface as ErrTokenPayloadInvalid (JSON unmarshal
+	// fails before signature check) or ErrTokenBadSignature (signature
+	// fails on a still-parseable payload). Both are acceptable.
+	if !errors.Is(err, ErrTokenBadSignature) && !errors.Is(err, ErrTokenPayloadInvalid) {
+		t.Fatalf("want ErrTokenBadSignature or ErrTokenPayloadInvalid, got %v", err)
 	}
 }
 
@@ -100,7 +119,7 @@ func TestToken_Verify_BadSignature_PayloadTampered(t *testing.T) {
 
 func TestToken_Verify_Expired(t *testing.T) {
 	pub, priv := newKeypair(t)
-	v := NewEd25519UploadTokenVerifier(pub)
+	v := newSingleKeyVerifier(t, "", pub)
 
 	now := time.Unix(1_700_000_000, 0)
 	tok := mintToken(t, priv, UploadTokenPayload{
@@ -115,7 +134,7 @@ func TestToken_Verify_Expired(t *testing.T) {
 
 func TestToken_Verify_ZeroExpIsExpired(t *testing.T) {
 	pub, priv := newKeypair(t)
-	v := NewEd25519UploadTokenVerifier(pub)
+	v := newSingleKeyVerifier(t, "", pub)
 
 	// Absent exp (→ zero after JSON unmarshal) must be rejected, not
 	// silently treated as "never expires". Defense-in-depth against a
@@ -134,7 +153,7 @@ func TestToken_Verify_ZeroExpIsExpired(t *testing.T) {
 
 func TestToken_Verify_CIDMismatch(t *testing.T) {
 	pub, priv := newKeypair(t)
-	v := NewEd25519UploadTokenVerifier(pub)
+	v := newSingleKeyVerifier(t, "", pub)
 
 	now := time.Now()
 	tok := mintToken(t, priv, UploadTokenPayload{
@@ -149,7 +168,7 @@ func TestToken_Verify_CIDMismatch(t *testing.T) {
 
 func TestToken_Verify_SizeMismatch(t *testing.T) {
 	pub, priv := newKeypair(t)
-	v := NewEd25519UploadTokenVerifier(pub)
+	v := newSingleKeyVerifier(t, "", pub)
 
 	now := time.Now()
 	tok := mintToken(t, priv, UploadTokenPayload{
@@ -166,7 +185,7 @@ func TestToken_Verify_SizeMismatch(t *testing.T) {
 
 func TestToken_Verify_Malformed(t *testing.T) {
 	pub, _ := newKeypair(t)
-	v := NewEd25519UploadTokenVerifier(pub)
+	v := newSingleKeyVerifier(t, "", pub)
 
 	cases := []struct {
 		name string
@@ -187,10 +206,157 @@ func TestToken_Verify_Malformed(t *testing.T) {
 			if err == nil {
 				t.Fatal("want error, got nil")
 			}
-			if !errors.Is(err, ErrTokenMalformed) && !errors.Is(err, ErrTokenBadSignature) {
-				t.Fatalf("want ErrTokenMalformed or ErrTokenBadSignature, got %v", err)
+			// Malformed token paths can surface as Malformed,
+			// PayloadInvalid (JSON parse fails), UnknownKid (unsigned
+			// payload had a kid we don't recognize), or BadSignature
+			// (parseable payload, signature bytes don't verify). All
+			// are acceptable rejection modes.
+			if !errors.Is(err, ErrTokenMalformed) &&
+				!errors.Is(err, ErrTokenPayloadInvalid) &&
+				!errors.Is(err, ErrTokenUnknownKid) &&
+				!errors.Is(err, ErrTokenBadSignature) {
+				t.Fatalf("want a token rejection error, got %v", err)
 			}
 		})
+	}
+}
+
+// ─── v7.75: Kid-keyed dispatch (operator key rotation) ───────────────
+
+// TestToken_Verify_KidDispatch_TwoKeysCoexist pins the rotation-window
+// invariant: a verifier registered with two operator pubkeys keyed by
+// kid honors tokens minted under either one, but not under any other
+// kid. This is the core property the artifact store provides during a
+// scheduled operator key rotation — tokens issued before and during
+// the cutover both verify.
+func TestToken_Verify_KidDispatch_TwoKeysCoexist(t *testing.T) {
+	pubOld, privOld := newKeypair(t)
+	pubNew, privNew := newKeypair(t)
+
+	v, err := NewEd25519UploadTokenVerifier(map[string]ed25519.PublicKey{
+		"op-2026": pubOld,
+		"op-2027": pubNew,
+	})
+	if err != nil {
+		t.Fatalf("NewEd25519UploadTokenVerifier: %v", err)
+	}
+
+	now := time.Now()
+	tokOld := mintToken(t, privOld, UploadTokenPayload{
+		CID: "sha256:abc", Size: 1, Exp: now.Unix() + 60, Kid: "op-2026",
+	})
+	tokNew := mintToken(t, privNew, UploadTokenPayload{
+		CID: "sha256:def", Size: 1, Exp: now.Unix() + 60, Kid: "op-2027",
+	})
+
+	if err := v.Verify(tokOld, "sha256:abc", 1, now); err != nil {
+		t.Fatalf("token under op-2026 (old kid): %v", err)
+	}
+	if err := v.Verify(tokNew, "sha256:def", 1, now); err != nil {
+		t.Fatalf("token under op-2027 (new kid): %v", err)
+	}
+}
+
+// TestToken_Verify_UnknownKid_ReturnsErrTokenUnknownKid pins the
+// distinct error sentinel — audit pipelines must be able to alert on
+// "unknown kid" separately from "bad signature." An attacker minting
+// tokens with a fabricated kid produces this error; the audit reason
+// "token_unknown_kid" surfaces in the SIEM.
+func TestToken_Verify_UnknownKid_ReturnsErrTokenUnknownKid(t *testing.T) {
+	pub, priv := newKeypair(t)
+	v := newSingleKeyVerifier(t, "op-known", pub)
+
+	now := time.Now()
+	tok := mintToken(t, priv, UploadTokenPayload{
+		CID: "sha256:abc", Size: 1, Exp: now.Unix() + 60, Kid: "op-attacker",
+	})
+
+	err := v.Verify(tok, "sha256:abc", 1, now)
+	if !errors.Is(err, ErrTokenUnknownKid) {
+		t.Fatalf("want ErrTokenUnknownKid, got %v", err)
+	}
+}
+
+// TestToken_Verify_TokenWithoutKid_RequiresEmptyEntry pins the single-
+// key deployment story: a verifier that registers a pubkey under
+// kid="" accepts tokens that omit the kid claim. Without that empty
+// entry, a token without kid is rejected as unknown.
+func TestToken_Verify_TokenWithoutKid_RequiresEmptyEntry(t *testing.T) {
+	pub, priv := newKeypair(t)
+
+	now := time.Now()
+	tok := mintToken(t, priv, UploadTokenPayload{
+		CID: "sha256:abc", Size: 1, Exp: now.Unix() + 60,
+		// no Kid set — JSON omits the field
+	})
+
+	t.Run("with_empty_entry_accepts", func(t *testing.T) {
+		v := newSingleKeyVerifier(t, "", pub)
+		if err := v.Verify(tok, "sha256:abc", 1, now); err != nil {
+			t.Fatalf("kid-less token with empty-entry verifier: %v", err)
+		}
+	})
+	t.Run("without_empty_entry_rejects", func(t *testing.T) {
+		v := newSingleKeyVerifier(t, "op-required", pub)
+		err := v.Verify(tok, "sha256:abc", 1, now)
+		if !errors.Is(err, ErrTokenUnknownKid) {
+			t.Fatalf("want ErrTokenUnknownKid, got %v", err)
+		}
+	})
+}
+
+// TestToken_Verify_KidDispatch_WrongKeyForKid pins fail-closed under
+// kid spoofing: an attacker who takes a token signed by the OLD key
+// and rewrites its kid claim to point at the NEW key's slot must NOT
+// verify, because the signature was made with the old private key.
+// The rewritten payload's signature won't match the new pubkey.
+func TestToken_Verify_KidDispatch_WrongKeyForKid(t *testing.T) {
+	pubOld, privOld := newKeypair(t)
+	pubNew, _ := newKeypair(t)
+
+	v, err := NewEd25519UploadTokenVerifier(map[string]ed25519.PublicKey{
+		"op-old": pubOld,
+		"op-new": pubNew,
+	})
+	if err != nil {
+		t.Fatalf("NewEd25519UploadTokenVerifier: %v", err)
+	}
+
+	now := time.Now()
+	// Mint with old key but claim kid=op-new.
+	tok := mintToken(t, privOld, UploadTokenPayload{
+		CID: "sha256:abc", Size: 1, Exp: now.Unix() + 60, Kid: "op-new",
+	})
+
+	err = v.Verify(tok, "sha256:abc", 1, now)
+	if !errors.Is(err, ErrTokenBadSignature) {
+		t.Fatalf("want ErrTokenBadSignature, got %v", err)
+	}
+}
+
+// ─── v7.75: Constructor input validation ─────────────────────────────
+
+func TestNewEd25519UploadTokenVerifier_RejectsEmptyMap(t *testing.T) {
+	_, err := NewEd25519UploadTokenVerifier(map[string]ed25519.PublicKey{})
+	if err == nil {
+		t.Fatal("empty map: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("error should mention empty map: %v", err)
+	}
+}
+
+func TestNewEd25519UploadTokenVerifier_RejectsWrongLengthKey(t *testing.T) {
+	// 16 bytes — clearly not Ed25519 (which is 32).
+	short := make(ed25519.PublicKey, 16)
+	_, err := NewEd25519UploadTokenVerifier(map[string]ed25519.PublicKey{
+		"shorty": short,
+	})
+	if err == nil {
+		t.Fatal("short key: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "ed25519") {
+		t.Fatalf("error should mention ed25519: %v", err)
 	}
 }
 

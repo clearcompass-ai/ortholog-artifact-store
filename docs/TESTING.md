@@ -489,17 +489,47 @@ post-mortem.
 
 ---
 
+## v7.75 alignment gate
+
+`make audit-v775-consumer` is the per-release gate that verifies the
+artifact store correctly consumes SDK v7.75. It runs five checks
+without Docker or cloud credentials:
+
+1. `go build ./...` — module + SDK pin compiles
+2. `go vet ./...` — toolchain alignment
+3. `go vet -tags=integration ./tests/integration/...` — Wave 2 builds
+4. `go vet -tags=staging ./tests/staging/...` — Wave 3 builds
+5. `go test -race -count=1 ./...` — Wave 1 unit + conformance
+
+Step 5 includes the v7.75-specific test surface:
+
+| Test file | What it pins |
+|---|---|
+| `api/push_algorithm_agile_test.go` | Part 2: push uses `cid.Verify` (algorithm-agile, not hard-coded SHA-256) |
+| `backends/ipfs_algorithm_guard_test.go` | Part 3: IPFS rejects non-SHA-256 CIDs at every method, fail-closed before any HTTP |
+| `tests/conformance/scenarios_cid_wire.go` | Part 3: `CID.Bytes()` wire-form preserved (algorithm tag survives) across every backend |
+| `api/token_test.go` `TestToken_Verify_KidDispatch_*` | Part 4: kid-keyed verifier dispatches correctly across rotation windows |
+| `api/push_token_test.go` `TestPush_TokenRotationWindow_*` | Part 4: operator key rotation honored at the push handler with `token_unknown_kid` audit reason |
+| `cmd/artifact-store/token_test.go` | Part 4: `ARTIFACT_OPERATOR_PUBKEYS` and `ARTIFACT_OPERATOR_PUBKEYS_DIR` loaders parse PEM/hex/base64 |
+
+The gate runs in CI on every PR (see `.github/workflows/ci.yml`'s
+`v7.75 alignment gate` step) so an alignment regression surfaces as a
+distinct red signal, not buried inside a generic test failure.
+
+---
+
 ## Running tests locally
 
 ```bash
-make test             # Wave 1 — 5 seconds
-make test-verbose     # same with -v
-make test-integration # Wave 2 — 90 seconds, requires Docker
-make test-staging     # Wave 3 — up to 5 minutes, requires STAGING_ENABLED=1 + vendor credentials
-make coverage         # produces coverage.html
-make lint             # go vet + staticcheck
-make fuzz             # 30s per fuzz target
-make flake            # 50 iterations; detects flakes
+make test                   # Wave 1 — 5 seconds
+make test-verbose           # same with -v
+make test-integration       # Wave 2 — 90 seconds, requires Docker
+make test-staging           # Wave 3 — up to 5 minutes, requires STAGING_ENABLED=1 + vendor credentials
+make audit-v775-consumer    # v7.75 SDK alignment gate (build + vet + Wave 1 tests)
+make coverage               # produces coverage.html
+make lint                   # go vet + staticcheck
+make fuzz                   # 30s per fuzz target
+make flake                  # 50 iterations; detects flakes
 make test-all         # lint + test + coverage-gate
 ```
 

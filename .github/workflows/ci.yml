@@ -83,7 +83,17 @@ jobs:
       - name: build
         run: go build ./...
 
-      - name: test with race detector
+      # v7.75 SDK alignment audit gate. Verifies the artifact store
+      # consumes the SDK contract correctly (toolchain, algorithm-agile
+      # cid.Verify, CID.Bytes() wire form, IPFS algorithm guard, kid-
+      # keyed upload-token verifier through SDK signatures.VerifyEd25519).
+      # Defined in Makefile; runs in this same job before the coverage
+      # gate so a failure surfaces as "alignment regression," not "test
+      # flake." See docs/TESTING.md "v7.75 alignment gate" for details.
+      - name: v7.75 alignment gate
+        run: make audit-v775-consumer
+
+      - name: test with race detector (coverage profile)
         run: go test -race -count=1 -timeout=60s -coverprofile=coverage.out ./...
 
       # Coverage gate. Fails the job if any non-cmd package < 80%.

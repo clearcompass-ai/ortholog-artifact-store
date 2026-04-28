@@ -142,10 +142,27 @@ uploads. Policy is controlled by `ARTIFACT_REQUIRE_UPLOAD_TOKEN`:
 | `required` | Every push must carry a valid token or returns 401. | Multi-tenant, shared-network, or untrusted-client deployments. |
 
 Token format: `base64url(payload_json).base64url(ed25519_signature)`.
-Payload fields: `cid`, `size`, `exp` (required), `iat`, `kid` (optional).
-The server verifies the signature against `ARTIFACT_OPERATOR_PUBKEY`
-(inline) or `ARTIFACT_OPERATOR_PUBKEY_FILE` (path). Accepted key
-encodings: PEM, base64, hex (64 chars). All three auto-detect.
+Payload fields: `cid`, `size`, `exp` (required), `iat`, `kid` (REQUIRED
+when the store is loaded with multiple operator pubkeys; falls back to
+the empty-kid slot for single-key deployments).
+
+Operator pubkeys are kid-keyed at the store. The verifier dispatches
+on the token's `kid` claim before checking the signature, which makes
+operator key rotation a configuration swap rather than a code change.
+Two equivalent loaders:
+
+| Env var | Format | Use when |
+|---|---|---|
+| `ARTIFACT_OPERATOR_PUBKEYS` | `kid1:<encoded>,kid2:<encoded>` (PEM/base64/hex auto-detected) | Inline config, small deployments, dev |
+| `ARTIFACT_OPERATOR_PUBKEYS_DIR` | Directory of `<kid>.pem` files | Secret-mount workflows where each key rotates as its own file |
+
+Single-key deployments register a key under the empty kid (`:<encoded>`
+inline, or `.pem` named `''`-ish in a dir of one) and mint tokens
+without a `kid` claim. Rotation: load both old and new keys for the
+window, retire the old kid after in-flight tokens expire. The Ed25519
+signature itself is verified through the SDK's audited
+`crypto/signatures.VerifyEd25519` primitive — the same one every
+log-side signature check uses.
 
 Every rejected push emits a structured audit log with a stable
 `event`/`reason` pair (see "Audit logging" below).
@@ -158,6 +175,7 @@ Every push rejection emits a WARN-level `slog` record with:
 event  = "artifact.push.rejected"
 reason = one of: size_exceeded | cid_mismatch |
                  token_required_missing | token_invalid |
+                 token_unknown_kid |
                  token_expired | token_cid_mismatch |
                  token_size_mismatch | token_malformed |
                  missing_cid_header | invalid_cid_header |
