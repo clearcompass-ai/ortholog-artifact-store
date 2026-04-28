@@ -2,7 +2,6 @@ package api
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"io"
 	"log/slog"
 	"net/http"
@@ -177,17 +176,21 @@ func TestPush_DigestMismatch_RejectedWithAudit(t *testing.T) {
 		t.Fatalf("status: want 400, got %d", w.Code)
 	}
 
-	// Audit log must carry event/reason plus both digests.
-	computed := sha256.Sum256(corruptedBody)
-	cap.AssertContains(t, slog.LevelWarn, "push rejected: SHA-256 digest mismatch",
+	// Audit log must carry event/reason plus the computed CID
+	// (algorithm-aware via storage.ComputeWith), the algorithm name,
+	// and the claimed digest. computed_cid is the algorithm-agile
+	// successor of the old computed_digest field.
+	computedCID := storage.ComputeWith(corruptedBody, claimedCID.Algorithm)
+	cap.AssertContains(t, slog.LevelWarn, "push rejected: CID digest mismatch",
 		map[string]any{
-			"event":           "artifact.push.rejected",
-			"reason":          "cid_mismatch",
-			"claimed_cid":     claimedCID.String(),
-			"remote_addr":     "192.0.2.1:12345",
-			"received_size":   int64(len(corruptedBody)),
-			"computed_digest": hexDigest(computed[:]),
-			"claimed_digest":  hexDigest(claimedCID.Digest),
+			"event":          "artifact.push.rejected",
+			"reason":         "cid_mismatch",
+			"claimed_cid":    claimedCID.String(),
+			"cid_algorithm":  "sha256",
+			"remote_addr":    "192.0.2.1:12345",
+			"received_size":  int64(len(corruptedBody)),
+			"computed_cid":   computedCID.String(),
+			"claimed_digest": hexDigest(claimedCID.Digest),
 		})
 
 	// Nothing should be stored.
