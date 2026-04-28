@@ -203,14 +203,14 @@ func createBackend(name string, cfg *config.Config, isMirror bool, _ *slog.Logge
 			Prefix: cfg.Prefix,
 		}), nil
 
-	case "s3":
+	case "rustfs":
 		endpoint := cfg.Endpoint
 		bucket := cfg.Bucket
 		if isMirror {
 			endpoint = cfg.MirrorEndpoint
 			bucket = cfg.MirrorBucket
 		}
-		return backends.NewS3Backend(backends.S3Config{
+		return backends.NewRustFSBackend(backends.RustFSConfig{
 			Endpoint:  endpoint,
 			Bucket:    bucket,
 			Region:    cfg.Region,

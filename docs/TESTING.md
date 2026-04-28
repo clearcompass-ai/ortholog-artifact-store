@@ -23,7 +23,7 @@ go up.
                         │  Staging E2E    │   Wave 3 — nightly, real cloud
                         ├─────────────────┤   Filebase + real GCS + real AWS
                         │  Ephemeral E2E  │   Wave 2 — per-PR, testcontainers
-                        ├─────────────────┤   MinIO + fake-gcs + Kubo
+                        ├─────────────────┤   RustFS + fake-gcs + Kubo
                         │  HTTP-mocked    │   Wave 1 — per-save, httptest
                         ├─────────────────┤
                         │  Unit + table   │   Wave 1 — per-save
@@ -71,7 +71,7 @@ network access.
 | Source | Test | Fake server |
 |---|---|---|
 | `backends/gcs.go` | `backends/gcs_test.go` | `testutil.GCSFake` (GCS JSON API) |
-| `backends/s3.go` | `backends/s3_test.go` | `testutil.S3Fake` (S3 REST, path-style) |
+| `backends/rustfs.go` | `backends/rustfs_test.go` | `testutil.S3Fake` (S3 wire protocol, path-style) |
 | `backends/ipfs.go` | `backends/ipfs_test.go` | `testutil.KuboFake` (Kubo RPC API) |
 | `backends/mirrored.go` | `backends/mirrored_test.go` | `scriptedBackend` with per-call error injection |
 | `backends/ipfs.go` | `backends/ipfs_cid_fuzz_test.go` | Go fuzz (10-30s in CI) |
@@ -105,7 +105,7 @@ The suite runs five scenario categories: `Lifecycle`, `Resolve`, `Errors`,
 `Concurrent`, `Integrity`. Adding a backend requires adding one factory
 and it gets ~30 tests for free.
 
-**Wave 2 adds more consumers:** MinIO, fake-gcs-server, Kubo. Same suite,
+**Wave 2 adds more consumers:** RustFS, fake-gcs-server, Kubo. Same suite,
 same scenarios, run against real-protocol implementations in Docker.
 
 **Wave 3 adds even more:** Filebase (IPFS + S3), real AWS, real GCS.
@@ -319,15 +319,15 @@ tests/integration/
 ├── main_test.go                    # TestMain: verifies Docker is reachable
 ├── helpers_test.go                 # randomPrefix for parallel isolation
 ├── containers/
-│   ├── minio.go                    # MinIO container (S3)
+│   ├── rustfs.go                   # RustFS container (S3 wire protocol)
 │   ├── fakegcs.go                  # fake-gcs-server container (GCS)
 │   ├── kubo.go                     # Kubo container (IPFS)
 │   ├── util.go                     # image-override env, HTTP helpers
 │   └── sigv4.go                    # minimal SigV4 signer (test-only)
-├── suite_minio_test.go             # RunBackendConformance(t, "minio", ...)
+├── suite_rustfs_test.go            # RunBackendConformance(t, "rustfs", ...)
 ├── suite_fakegcs_test.go           # RunBackendConformance(t, "fakegcs", ...)
 ├── suite_kubo_test.go              # RunBackendConformance(t, "kubo", ...)
-└── suite_mirrored_test.go          # MirroredStore across S3+GCS containers
+└── suite_mirrored_test.go          # MirroredStore across RustFS+GCS containers
 ```
 
 Every file carries `//go:build integration`. `go test ./...` (the Wave 1
@@ -378,7 +378,7 @@ for protocol-level regressions.
 
 ### Image pinning
 
-`MINIO_IMAGE`, `FAKEGCS_IMAGE`, `KUBO_IMAGE` env vars override the
+`RUSTFS_IMAGE`, `FAKEGCS_IMAGE`, `KUBO_IMAGE` env vars override the
 defaults. Local dev defaults to `:latest` for convenience; CI pins to
 specific released digests in `.github/workflows/integration.yml` so
 container updates are deliberate commits, not silent drift.
@@ -387,11 +387,15 @@ container updates are deliberate commits, not silent drift.
 
 ## Wave 3: real cloud staging (implemented)
 
-Wave 3 runs the same conformance suite against real Filebase (IPFS+S3),
-real AWS S3, and real GCS. This catches vendor-specific production
-quirks that containerized emulators miss: IAM edge cases, SigV4 clock
-skew, real GCS V4 signed-URL compatibility, Filebase IPFS propagation
-timing, virtual-host-style routing on AWS.
+Wave 3 runs the conformance suite against the two cloud-coupled
+backends in scope: real GCS and Filebase IPFS pinning. This catches
+vendor-specific production quirks that containerized emulators miss
+— GCS V4 signed-URL compatibility, Filebase IPFS propagation timing.
+
+The S3-protocol path is **not** in Wave 3. It is exercised in Wave 2
+against a containerized RustFS, which is the supported S3-protocol
+implementation. Real-cloud S3 vendors (AWS, Wasabi, R2, Filebase-S3)
+are intentionally not tested here.
 
 ### Files
 
@@ -401,15 +405,13 @@ tests/staging/
 ├── main_test.go                       # STAGING_ENABLED gate + per-vendor credential validation
 ├── helpers_test.go                    # randomPrefix + operation counter
 ├── http_helpers_test.go               # fetchURLBytes + eventual-consistency retry
-├── suite_aws_s3_test.go               # real AWS S3 conformance + presigned URL fetch
 ├── suite_gcs_test.go                  # real GCS conformance + V4 signed URL fetch
-├── suite_filebase_s3_test.go          # Filebase S3-compatible API conformance
 └── suite_filebase_ipfs_test.go        # Filebase IPFS RPC + CID digest property + gateway fetch
 
 internal/signers/                       # Shared real signers (no build tag)
-├── sigv4.go                            # Full SigV4 with PresignGetObject
+├── sigv4.go                            # Full SigV4 with PresignGetObject (used by RustFS)
 ├── gcs.go                              # GCS V4 RSA-SHA256 service-account signer
-└── s3_presigner.go                     # BoundS3Presigner wrapper
+└── s3_presigner.go                     # Bound S3-protocol presigner wrapper
 ```
 
 Every test file carries `//go:build staging`. Neither Wave 1 nor Wave 2
@@ -421,17 +423,12 @@ compiles this package.
 |---|---|---|---|
 | Wire shape | ✓ | ✓ | ✓ |
 | Vendor error classification | our model | reference impl | **production impl** |
-| Real SigV4 header canonicalization | no | permissive (MinIO) | ✓ **strict AWS** |
 | Real GCS V4 signed URL format | no | no | ✓ |
 | Real Kubo CID from Filebase | no | unauthenticated Kubo | ✓ **with auth, real network** |
-| IAM edge cases (denied operations) | no | no | ✓ |
-| Regional redirects / latency | no | no | ✓ |
 | Eventual consistency behavior | no | no | ✓ (IPFS gateway propagation) |
 
 The most valuable Wave 3 tests:
 
-- `TestAWS_S3_PresignedURLIsFetchable` — proves our SigV4 presigner
-  produces URLs that AWS's server-side verifier actually accepts
 - `TestGCS_SignedURLIsFetchable` — proves our V4 RSA-SHA256 signing
   matches GCS's expected format
 - `TestFilebase_IPFS_CIDDigestMatchesSDK` — the production analogue
@@ -464,9 +461,8 @@ Absent ALL vars for a vendor, that vendor's tests skip cleanly with a
 
 | Vendor | Env vars |
 |---|---|
-| AWS S3 | `STAGING_AWS_ACCESS_KEY_ID`, `STAGING_AWS_SECRET_ACCESS_KEY`, `STAGING_AWS_REGION`, `STAGING_AWS_BUCKET` |
 | GCS | `STAGING_GCS_BUCKET`, `STAGING_GCS_SERVICE_ACCOUNT_JSON` (path), `STAGING_GCS_ACCESS_TOKEN` (from `gcloud auth print-access-token`, minted by CI) |
-| Filebase | `STAGING_FILEBASE_KEY`, `STAGING_FILEBASE_SECRET`, `STAGING_FILEBASE_BUCKET`, `STAGING_FILEBASE_IPFS_TOKEN` |
+| Filebase IPFS | `STAGING_FILEBASE_IPFS_TOKEN` |
 
 ### Cost control
 

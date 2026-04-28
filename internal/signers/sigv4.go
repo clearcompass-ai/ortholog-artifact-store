@@ -27,8 +27,8 @@ import (
 )
 
 // SigV4 signs HTTP requests using AWS Signature Version 4.
-// Works with AWS S3, MinIO, Ceph, Filebase S3, R2, any S3-compatible
-// endpoint that accepts SigV4.
+// SigV4 is the protocol-level signing algorithm; the supported S3-
+// protocol implementation in this artifact store is RustFS.
 type SigV4 struct {
 	AccessKey string
 	SecretKey string

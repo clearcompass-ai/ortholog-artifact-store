@@ -92,13 +92,13 @@ func Load() (*Config, error) {
 
 func (c *Config) validate() error {
 	switch c.Backend {
-	case "gcs", "s3", "ipfs", "memory":
+	case "gcs", "rustfs", "ipfs", "memory":
 	default:
-		return fmt.Errorf("config: unknown backend %q (want gcs, s3, ipfs, or memory)", c.Backend)
+		return fmt.Errorf("config: unknown backend %q (want gcs, rustfs, ipfs, or memory)", c.Backend)
 	}
 	if c.MirrorBackend != "" {
 		switch c.MirrorBackend {
-		case "gcs", "s3", "ipfs":
+		case "gcs", "rustfs", "ipfs":
 		default:
 			return fmt.Errorf("config: unknown mirror backend %q", c.MirrorBackend)
 		}

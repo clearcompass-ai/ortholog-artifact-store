@@ -43,15 +43,6 @@ func TestMain(m *testing.M) {
 	var problems []string
 	for _, vendor := range []credentialGroup{
 		{
-			name: "AWS S3",
-			keys: []string{
-				"STAGING_AWS_ACCESS_KEY_ID",
-				"STAGING_AWS_SECRET_ACCESS_KEY",
-				"STAGING_AWS_REGION",
-				"STAGING_AWS_BUCKET",
-			},
-		},
-		{
 			name: "GCS",
 			keys: []string{
 				"STAGING_GCS_BUCKET",
@@ -59,11 +50,13 @@ func TestMain(m *testing.M) {
 			},
 		},
 		{
-			name: "Filebase",
+			// Filebase is exercised through its IPFS pinning gateway only.
+			// (S3-protocol vendor sprawl is out of scope for this repo —
+			// the supported S3-protocol implementation is RustFS, exercised
+			// in Wave 2 against a containerized RustFS, not in Wave 3
+			// against any real-cloud S3-compatible vendor.)
+			name: "Filebase IPFS",
 			keys: []string{
-				"STAGING_FILEBASE_KEY",
-				"STAGING_FILEBASE_SECRET",
-				"STAGING_FILEBASE_BUCKET",
 				"STAGING_FILEBASE_IPFS_TOKEN",
 			},
 		},
@@ -114,6 +107,5 @@ func (g credentialGroup) validate() error {
 // test may "skip" in Wave 3 — and the skip reason is always logged at
 // t.Logf so the reason appears in the CI summary.
 
-func awsConfigured() bool      { return os.Getenv("STAGING_AWS_BUCKET") != "" }
-func gcsConfigured() bool      { return os.Getenv("STAGING_GCS_BUCKET") != "" }
-func filebaseConfigured() bool { return os.Getenv("STAGING_FILEBASE_BUCKET") != "" }
+func gcsConfigured() bool          { return os.Getenv("STAGING_GCS_BUCKET") != "" }
+func filebaseIPFSConfigured() bool { return os.Getenv("STAGING_FILEBASE_IPFS_TOKEN") != "" }

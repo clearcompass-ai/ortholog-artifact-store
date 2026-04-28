@@ -12,10 +12,13 @@ Why this layer exists:
     both prior layers missed
 
 Container images lag production APIs by months. fake-gcs-server does not
-model the GCS signed-URL format accurately. MinIO's SigV4 implementation
-does not exercise AWS's real header canonicalization. IPFS clusters like
-Filebase add authentication, quotas, and rate limits that Kubo containers
-do not. Wave 3 is the layer that actually catches production regressions.
+model the GCS signed-URL format accurately. IPFS clusters like Filebase
+add authentication, quotas, and rate limits that Kubo containers do not.
+Wave 3 is the layer that actually catches production regressions for the
+two cloud-coupled backends in scope (GCS and Filebase IPFS). The S3-
+protocol path is exercised in Wave 2 against a containerized RustFS;
+real-cloud S3 vendors (AWS, Wasabi, R2, Filebase-S3) are not in the
+supported set and intentionally not tested here.
 
 What this layer IS NOT:
   - A load test (see load-generator repo, not in this codebase)
@@ -33,12 +36,9 @@ Cost and scheduling:
 
 Credentials (loaded from env, fail loudly if absent when Wave 3 is
 invoked):
-  AWS:      STAGING_AWS_ACCESS_KEY_ID, STAGING_AWS_SECRET_ACCESS_KEY,
-            STAGING_AWS_REGION, STAGING_AWS_BUCKET
-  GCS:      STAGING_GCS_BUCKET, STAGING_GCS_SERVICE_ACCOUNT_JSON (path to key file)
-  Filebase: STAGING_FILEBASE_KEY, STAGING_FILEBASE_SECRET,
-            STAGING_FILEBASE_BUCKET (S3-compatible bucket name)
-            STAGING_FILEBASE_IPFS_TOKEN (Filebase's IPFS RPC auth token)
+  GCS:           STAGING_GCS_BUCKET, STAGING_GCS_SERVICE_ACCOUNT_JSON
+                 (path to key file)
+  Filebase IPFS: STAGING_FILEBASE_IPFS_TOKEN (Filebase's IPFS RPC token)
 
 Build tag:
   Every file carries  //go:build staging

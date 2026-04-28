@@ -2,7 +2,7 @@
 
 Content-addressed blob store for the [Ortholog](https://github.com/clearcompass-ai/ortholog-sdk) decentralized credentialing protocol.
 
-A small HTTP service that stores ciphertext blobs keyed by SHA-256 CID, with pluggable storage backends (GCS, S3, IPFS, in-memory) and optional mirroring. It never computes CIDs, never encrypts, never holds keys — that's the SDK's job. It stores bytes and gives them back.
+A small HTTP service that stores ciphertext blobs keyed by CID, with pluggable storage backends (GCS, RustFS, IPFS, in-memory) and optional mirroring. It never computes CIDs, never encrypts, never holds keys — that's the SDK's job. It stores bytes and gives them back.
 
 ---
 
@@ -15,9 +15,9 @@ ARTIFACT_BACKEND=memory go run ./cmd/artifact-store
 # GCS-backed
 ARTIFACT_BACKEND=gcs ARTIFACT_BUCKET=my-bucket go run ./cmd/artifact-store
 
-# S3-backed with MinIO
-ARTIFACT_BACKEND=s3 \
-  ARTIFACT_ENDPOINT=http://localhost:9000 \
+# RustFS-backed (S3 wire protocol)
+ARTIFACT_BACKEND=rustfs \
+  ARTIFACT_ENDPOINT=http://rustfs.internal:9000 \
   ARTIFACT_BUCKET=artifacts \
   ARTIFACT_PATH_STYLE=true \
   go run ./cmd/artifact-store
@@ -39,7 +39,7 @@ The service listens on `:8082` by default. Override with `ARTIFACT_LISTEN_ADDR`.
 | `POST` | `/v1/artifacts` | Push bytes (header `X-Artifact-CID: <cid>`) |
 | `GET` | `/v1/artifacts/{cid}` | Fetch raw bytes |
 | `HEAD` | `/v1/artifacts/{cid}` | Existence check |
-| `DELETE` | `/v1/artifacts/{cid}` | Delete (GCS/S3 only; 501 on IPFS) |
+| `DELETE` | `/v1/artifacts/{cid}` | Delete (GCS/RustFS only; 501 on IPFS) |
 | `POST` | `/v1/artifacts/{cid}/pin` | Pin against GC |
 | `GET` | `/v1/artifacts/{cid}/resolve` | Retrieve a `RetrievalCredential` (direct/signed URL/IPFS gateway) |
 | `GET` | `/healthz` | Backend reachability |
@@ -51,13 +51,13 @@ The service listens on `:8082` by default. Override with `ARTIFACT_LISTEN_ADDR`.
 When the backend is IPFS, `/resolve` returns a gateway URL with `expiry: null`
 in the JSON response. The URL is a public, permanent pointer to the content
 on the IPFS network — there is no expiration because nothing on the server
-side can be expired. This differs from GCS/S3, which return signed URLs with
+side can be expired. This differs from GCS/RustFS, which return signed URLs with
 a bounded lifetime.
 
 Consumers of the `/resolve` endpoint must handle both cases:
 
 ```json
-// GCS / S3 response
+// GCS / RustFS response
 {"method": "signed_url", "url": "https://...", "expiry": "2026-04-16T17:00:00Z"}
 
 // IPFS response
@@ -68,8 +68,8 @@ The `?expiry=<seconds>` query parameter is silently ignored by the IPFS
 backend. Pass it if you wish — it has no effect on the returned URL.
 
 Security note: anyone who receives an IPFS URL can retrieve the bytes forever.
-For data that requires access control, use a GCS or S3 backend where signed
-URLs can be scoped in time and revoked by rotating the signing key.
+For data that requires access control, use a GCS or RustFS backend where
+signed URLs can be scoped in time and revoked by rotating the signing key.
 
 ---
 
@@ -79,17 +79,17 @@ All settings come from environment variables. Only `ARTIFACT_BACKEND` has a mean
 
 | Variable | Default | Notes |
 |---|---|---|
-| `ARTIFACT_BACKEND` | `memory` | `gcs`, `s3`, `ipfs`, `memory` |
-| `ARTIFACT_BUCKET` | `ortholog-artifacts` | GCS/S3 |
-| `ARTIFACT_ENDPOINT` | — | S3 endpoint override (MinIO/R2/Ceph) |
-| `ARTIFACT_REGION` | `us-east-1` | S3 only |
-| `ARTIFACT_PATH_STYLE` | `false` | S3 path-style addressing |
+| `ARTIFACT_BACKEND` | `memory` | `gcs`, `rustfs`, `ipfs`, `memory` |
+| `ARTIFACT_BUCKET` | `ortholog-artifacts` | GCS/RustFS |
+| `ARTIFACT_ENDPOINT` | — | RustFS endpoint URL |
+| `ARTIFACT_REGION` | `us-east-1` | RustFS only (SigV4 region label) |
+| `ARTIFACT_PATH_STYLE` | `false` | RustFS path-style addressing |
 | `ARTIFACT_PREFIX` | — | Object key prefix |
 | `ARTIFACT_IPFS_GATEWAY` | `https://ipfs.io` | Gateway URL returned by `Resolve` |
 | `ARTIFACT_IPFS_BEARER_TOKEN` | — | For Filebase/Pinata/authenticated clusters |
-| `ARTIFACT_MIRROR_BACKEND` | — | Secondary backend (`gcs`/`s3`/`ipfs`) |
+| `ARTIFACT_MIRROR_BACKEND` | — | Secondary backend (`gcs`/`rustfs`/`ipfs`) |
 | `ARTIFACT_MIRROR_MODE` | `sync` | `sync` or `async_pin` (IPFS↔IPFS only) |
-| `ARTIFACT_VERIFY_ON_PUSH` | `true` | **Do not disable in production.** Validates SHA-256 digest server-side. |
+| `ARTIFACT_VERIFY_ON_PUSH` | `true` | **Do not disable in production.** Validates the body hashes (under the CID's algorithm) to the CID digest server-side. |
 | `ARTIFACT_RESOLVE_EXPIRY` | `3600` | Default signed-URL lifetime (seconds) |
 | `ARTIFACT_LISTEN_ADDR` | `:8082` | |
 | `ARTIFACT_MAX_BODY_SIZE` | `67108864` | 64 MB. Push requests over this return 413. |
@@ -175,7 +175,7 @@ upstream operator's quota and signing pipeline catches them first.
 
 - The service does not hold encryption keys. All ciphertext is opaque to the store.
 - IPFS `/resolve` URLs are permanent (see above). For access-controlled data,
-  use GCS or S3.
+  use GCS or RustFS.
 
 ---
 

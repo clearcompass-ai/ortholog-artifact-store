@@ -72,22 +72,6 @@ jobs:
           cache: true
 
       # ──────────────────────────────────────────────────────────────
-      # AWS credentials
-      # ──────────────────────────────────────────────────────────────
-      # Secrets named at the repo level:
-      #   STAGING_AWS_ACCESS_KEY_ID, STAGING_AWS_SECRET_ACCESS_KEY,
-      #   STAGING_AWS_REGION, STAGING_AWS_BUCKET
-      # IAM policy for that key must be scoped to:
-      #   s3:GetObject, s3:PutObject, s3:DeleteObject, s3:ListBucket,
-      #   s3:PutObjectTagging  — all Resource-limited to arn:aws:s3:::<bucket>/staging/*
-      - name: inject AWS env
-        run: |
-          echo "STAGING_AWS_ACCESS_KEY_ID=${{ secrets.STAGING_AWS_ACCESS_KEY_ID }}" >> "$GITHUB_ENV"
-          echo "STAGING_AWS_SECRET_ACCESS_KEY=${{ secrets.STAGING_AWS_SECRET_ACCESS_KEY }}" >> "$GITHUB_ENV"
-          echo "STAGING_AWS_REGION=${{ secrets.STAGING_AWS_REGION }}" >> "$GITHUB_ENV"
-          echo "STAGING_AWS_BUCKET=${{ secrets.STAGING_AWS_BUCKET }}" >> "$GITHUB_ENV"
-
-      # ──────────────────────────────────────────────────────────────
       # GCS credentials
       # ──────────────────────────────────────────────────────────────
       # The service-account JSON is stored as a single secret and written
@@ -119,13 +103,13 @@ jobs:
           echo "STAGING_GCS_ACCESS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
 
       # ──────────────────────────────────────────────────────────────
-      # Filebase credentials
+      # Filebase IPFS pinning credentials
       # ──────────────────────────────────────────────────────────────
-      - name: inject Filebase env
+      # Filebase is exercised through its IPFS pinning gateway only —
+      # the S3-protocol path is covered in Wave 2 against a containerized
+      # RustFS, not against any real-cloud S3-compatible vendor.
+      - name: inject Filebase IPFS env
         run: |
-          echo "STAGING_FILEBASE_KEY=${{ secrets.STAGING_FILEBASE_KEY }}" >> "$GITHUB_ENV"
-          echo "STAGING_FILEBASE_SECRET=${{ secrets.STAGING_FILEBASE_SECRET }}" >> "$GITHUB_ENV"
-          echo "STAGING_FILEBASE_BUCKET=${{ secrets.STAGING_FILEBASE_BUCKET }}" >> "$GITHUB_ENV"
           echo "STAGING_FILEBASE_IPFS_TOKEN=${{ secrets.STAGING_FILEBASE_IPFS_TOKEN }}" >> "$GITHUB_ENV"
 
       - name: go mod download
@@ -139,16 +123,6 @@ jobs:
         env:
           STAGING_ENABLED: "1"
 
-      # Failure diagnostics: list remaining objects under staging/ so the
-      # post-mortem shows what the failing test left behind. The 24h
-      # lifecycle rule catches these eventually, but a diagnostic dump
-      # speeds up investigation.
-      - name: diagnose leftover AWS objects
-        if: failure() && env.STAGING_AWS_BUCKET != ''
-        run: |
-          echo "Objects under staging/ in AWS bucket (top 50):"
-          # Uses the AWS CLI installed on ubuntu-latest by default.
-          aws s3 ls "s3://${STAGING_AWS_BUCKET}/staging/" --recursive | head -50 || true
 
   # Companion job: ensure the staging build tag compiles even when
   # secrets are absent. Catches PRs that break the tag without needing

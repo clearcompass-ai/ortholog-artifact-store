@@ -183,10 +183,10 @@ Add a row under Layer 2:
 ## 8. Update Wave 2/3 if the backend is cloud-hosted
 
 Wave 2 (testcontainers) only makes sense if there's a reference
-implementation you can run in a container. Most cloud services don't
-have one — MinIO, fake-gcs-server, and Kubo are the exceptions.
-If your backend has one, add a `tests/integration/suite_<name>_test.go`
-consumer when Wave 2 is implemented.
+implementation you can run in a container. The supported set is small:
+RustFS for the S3 wire protocol, fake-gcs-server for GCS, Kubo for
+IPFS. If your backend has a containerizable reference, add a
+`tests/integration/suite_<name>_test.go` consumer.
 
 Wave 3 (real cloud) applies to every cloud-hosted backend. When Wave 3
 is implemented, you add `tests/staging/suite_<name>_test.go` with a

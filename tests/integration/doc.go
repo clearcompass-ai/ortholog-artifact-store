@@ -27,7 +27,7 @@ Build tag:
 
 Prerequisites:
   - Docker daemon reachable (DOCKER_HOST env or /var/run/docker.sock)
-  - Pull access to: minio/minio, fsouza/fake-gcs-server, ipfs/kubo
+  - Pull access to: rustfs/rustfs, fsouza/fake-gcs-server, ipfs/kubo
 
   If Docker is unreachable, TestMain bails out with a clear message.
   Tests do NOT silently skip — silently-skipped integration tests are

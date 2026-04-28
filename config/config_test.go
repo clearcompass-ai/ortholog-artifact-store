@@ -44,9 +44,10 @@ func TestLoad_BackendValidation(t *testing.T) {
 	}{
 		{"memory", "memory", false},
 		{"gcs", "gcs", false},
-		{"s3", "s3", false},
+		{"rustfs", "rustfs", false},
 		{"ipfs", "ipfs", false},
 		{"empty_defaults_to_memory", "", false},
+		{"s3_no_longer_accepted", "s3", true},
 		{"unknown_errors", "postgres", true},
 		{"typo_errors", "gcss", true},
 	}
@@ -88,10 +89,11 @@ func TestLoad_MirrorBackendValidation(t *testing.T) {
 		wantErr bool
 	}{
 		{"gcs", "gcs", false},
-		{"s3", "s3", false},
+		{"rustfs", "rustfs", false},
 		{"ipfs", "ipfs", false},
 		{"empty_disables_mirror", "", false},
 		{"memory_is_invalid_as_mirror", "memory", true},
+		{"s3_no_longer_accepted", "s3", true},
 		{"unknown_errors", "ftp", true},
 	}
 	for _, tc := range cases {

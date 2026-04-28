@@ -24,7 +24,7 @@ const filebaseIPFSGateway = "https://ipfs.filebase.io"
 
 func newFilebaseIPFSBackend(t *testing.T) backends.BackendProvider {
 	t.Helper()
-	if !filebaseConfigured() {
+	if !filebaseIPFSConfigured() {
 		t.Skipf("Filebase credentials not configured")
 	}
 	return backends.NewIPFSBackend(backends.IPFSConfig{
@@ -38,7 +38,7 @@ func newFilebaseIPFSBackend(t *testing.T) backends.BackendProvider {
 // Filebase's authenticated Kubo-compatible IPFS RPC. This exercises
 // the bearer-token code path that Wave 2's anonymous Kubo cannot test.
 func TestConformance_Filebase_IPFS(t *testing.T) {
-	if !filebaseConfigured() {
+	if !filebaseIPFSConfigured() {
 		t.Skip("Filebase not configured for this run")
 	}
 	recordOp(t)
@@ -57,7 +57,7 @@ func TestConformance_Filebase_IPFS(t *testing.T) {
 // TestFilebase_IPFS_Healthy validates the bearer token is correct and
 // the RPC endpoint reachable.
 func TestFilebase_IPFS_Healthy(t *testing.T) {
-	if !filebaseConfigured() {
+	if !filebaseIPFSConfigured() {
 		t.Skip("Filebase not configured")
 	}
 	b := newFilebaseIPFSBackend(t)
@@ -75,7 +75,7 @@ func TestFilebase_IPFS_Healthy(t *testing.T) {
 // Wave 3 verifies it against Filebase's production infrastructure,
 // which may run a patched Kubo or a custom implementation.
 func TestFilebase_IPFS_CIDDigestMatchesSDK(t *testing.T) {
-	if !filebaseConfigured() {
+	if !filebaseIPFSConfigured() {
 		t.Skip("Filebase not configured")
 	}
 	b := newFilebaseIPFSBackend(t)
@@ -95,7 +95,7 @@ func TestFilebase_IPFS_CIDDigestMatchesSDK(t *testing.T) {
 // actually retrieves the content via Filebase's gateway. Eventually
 // consistent — wait up to 30s for propagation.
 func TestFilebase_IPFS_GatewayURL_Fetchable(t *testing.T) {
-	if !filebaseConfigured() {
+	if !filebaseIPFSConfigured() {
 		t.Skip("Filebase not configured")
 	}
 	b := newFilebaseIPFSBackend(t)
@@ -129,7 +129,7 @@ func TestFilebase_IPFS_GatewayURL_Fetchable(t *testing.T) {
 // Filebase IPFS doesn't support true delete (only unpin, which doesn't
 // guarantee removal). The backend must return storage.ErrNotSupported.
 func TestFilebase_IPFS_DeleteUnsupported(t *testing.T) {
-	if !filebaseConfigured() {
+	if !filebaseIPFSConfigured() {
 		t.Skip("Filebase not configured")
 	}
 	b := newFilebaseIPFSBackend(t)

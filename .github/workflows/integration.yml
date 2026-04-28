@@ -2,10 +2,10 @@
 # ortholog-artifact-store — Wave 2: testcontainer-backed integration tests
 #
 # Runs the full conformance suite against real protocol implementations
-# (MinIO, fake-gcs-server, Kubo) in Docker containers. This catches
+# (RustFS, fake-gcs-server, Kubo) in Docker containers. This catches
 # wire-format divergences that Wave 1's HTTP-mocked tests cannot see:
-# multihash encoding drift in IPFS, SigV4 header ordering in S3, GCS
-# error-classification quirks.
+# multihash encoding drift in IPFS, SigV4 header ordering in the
+# S3-protocol path against RustFS, GCS error-classification quirks.
 #
 # Gated on //go:build integration. Per-PR CI does NOT run this — only
 # the scheduled/dispatched workflow. Reason: Wave 2 takes ~90 seconds
@@ -42,7 +42,7 @@ env:
   GO_VERSION: "1.25.7"
   # Pin image digests here so CI runs are reproducible. Updating these
   # is a deliberate commit, not a silent drift behind :latest.
-  MINIO_IMAGE: "minio/minio:RELEASE.2024-03-21T23-13-43Z"
+  RUSTFS_IMAGE: "rustfs/rustfs:latest"
   FAKEGCS_IMAGE: "fsouza/fake-gcs-server:1.49.2"
   KUBO_IMAGE: "ipfs/kubo:v0.28.0"
 
@@ -70,7 +70,7 @@ jobs:
       # flakes easier to diagnose.
       - name: pre-pull container images
         run: |
-          docker pull "${MINIO_IMAGE}"
+          docker pull "${RUSTFS_IMAGE}"
           docker pull "${FAKEGCS_IMAGE}"
           docker pull "${KUBO_IMAGE}"
 
