@@ -21,9 +21,9 @@ go up.
                         │  Prod canaries  │   60s cadence — deployed service
                         ├─────────────────┤   (not in this repo)
                         │  Staging E2E    │   Wave 3 — nightly, real cloud
-                        ├─────────────────┤   Filebase + real GCS + real AWS
+                        ├─────────────────┤   real GCS
                         │  Ephemeral E2E  │   Wave 2 — per-PR, testcontainers
-                        ├─────────────────┤   RustFS + fake-gcs + Kubo
+                        ├─────────────────┤   RustFS + fake-gcs
                         │  HTTP-mocked    │   Wave 1 — per-save, httptest
                         ├─────────────────┤
                         │  Unit + table   │   Wave 1 — per-save
@@ -72,9 +72,8 @@ network access.
 |---|---|---|
 | `backends/gcs.go` | `backends/gcs_test.go` | `testutil.GCSFake` (GCS JSON API) |
 | `backends/rustfs.go` | `backends/rustfs_test.go` | `testutil.S3Fake` (S3 wire protocol, path-style) |
-| `backends/ipfs.go` | `backends/ipfs_test.go` | `testutil.KuboFake` (Kubo RPC API) |
 | `backends/mirrored.go` | `backends/mirrored_test.go` | `scriptedBackend` with per-call error injection |
-| `backends/ipfs.go` | `backends/ipfs_cid_fuzz_test.go` | Go fuzz (10-30s in CI) |
+| `internal/testutil/httpfakes.go` | `internal/testutil/httpfakes_test.go` | direct exercises of `GCSFake` and `S3Fake` (Push/Fetch/HEAD/Delete/Pin shapes, status overrides, request observation) |
 
 The HTTP fakes live in `internal/testutil/httpfakes.go`. They record
 every request so tests can assert on method, path, query, headers, and
@@ -105,11 +104,11 @@ The suite runs five scenario categories: `Lifecycle`, `Resolve`, `Errors`,
 `Concurrent`, `Integrity`. Adding a backend requires adding one factory
 and it gets ~30 tests for free.
 
-**Wave 2 adds more consumers:** RustFS, fake-gcs-server, Kubo. Same suite,
+**Wave 2 adds more consumers:** RustFS, fake-gcs-server. Same suite,
 same scenarios, run against real-protocol implementations in Docker.
 
-**Wave 3 adds even more:** Filebase (IPFS + S3), real AWS, real GCS.
-Same suite, same scenarios, run against production cloud.
+**Wave 3 adds one more:** real GCS. Same suite, same scenarios, run
+against the production cloud API.
 
 ### Shared test infrastructure
 
@@ -118,7 +117,7 @@ Same suite, same scenarios, run against production cloud.
 | File | Purpose |
 |---|---|
 | `slogcapture.go` | Capturing `slog.Handler` with `AssertContains(level, msg, attrs)` — enables audit-log assertions (push handler's 3.6 audit trail) |
-| `httpfakes.go` | `GCSFake`, `S3Fake`, `KuboFake` — httptest servers that mimic the real APIs |
+| `httpfakes.go` | `GCSFake`, `S3Fake` — httptest servers that mimic the GCS JSON API and S3 wire protocol respectively |
 | `goleak.go` | `RunWithGoleak(m)` — one-liner for `TestMain` that fails on goroutine leaks |
 | `cidvectors.go` | Known SHA-256 vectors for regression-proofing CID computation |
 | `hash.go` | Internal SHA-256 helper shared by the above |
@@ -135,8 +134,6 @@ goroutine fails the whole binary — enforced across the entire suite.
 | `goleak` | `TestMain` in 4 packages | Fails if any goroutine survives tests. (`api`, `backends`, `tests/conformance`, and `cmd/artifact-store` for the AS-1 watchdog.) |
 | Coverage 80% floor | `scripts/coverage-gate.sh` | CI fails if any non-cmd package drops below 80%. |
 | Lint | `.golangci.yml` | vet, staticcheck, gosec, ineffassign, unused. |
-| Fuzz smoke | CI `fuzz-smoke` job | Each fuzz target runs 10s per PR. |
-| Weekly fuzz | `.github/workflows/fuzz.yml` | 5m per target; auto-PR on crash. |
 | Weekly flake-detect | `.github/workflows/flake-detect.yml` | Suite runs 50×; any failure = issue. |
 
 ### Audit-log schema (AS-3)
@@ -321,12 +318,10 @@ tests/integration/
 ├── containers/
 │   ├── rustfs.go                   # RustFS container (S3 wire protocol)
 │   ├── fakegcs.go                  # fake-gcs-server container (GCS)
-│   ├── kubo.go                     # Kubo container (IPFS)
 │   ├── util.go                     # image-override env, HTTP helpers
 │   └── sigv4.go                    # minimal SigV4 signer (test-only)
 ├── suite_rustfs_test.go            # RunBackendConformance(t, "rustfs", ...)
 ├── suite_fakegcs_test.go           # RunBackendConformance(t, "fakegcs", ...)
-├── suite_kubo_test.go              # RunBackendConformance(t, "kubo", ...)
 └── suite_mirrored_test.go          # MirroredStore across RustFS+GCS containers
 ```
 
@@ -341,15 +336,8 @@ flow) compiles none of this and starts no containers.
 | Wrong method/headers | ✓ | ✓ |
 | Error code classification | our model | real protocol |
 | SigV4 signature format | n/a (mock accepts anything) | ✓ real S3-compatible server |
-| IPFS multihash encoding drift | ✓ round-trip in our code | ✓ **real Kubo's output** |
-| Kubo RPC API contract changes | n/a | ✓ catches version-to-version breaks |
-| Cross-protocol mirroring | scripted double | ✓ real heterogeneous backends |
-
-The most important test in Wave 2 is `TestKubo_CIDDigestMatchesSDK` —
-it asserts that the SHA-256 digest extracted from a real Kubo CIDv1
-response matches the SDK's digest for the same bytes, across payload
-sizes. If the multihash encoding drifts (alphabet, multibase, multicodec,
-block-size logic), this test catches it before production.
+| GCS JSON API contract changes | n/a | ✓ catches version-to-version breaks against fake-gcs |
+| Cross-provider mirroring | scripted double | ✓ real heterogeneous backends (RustFS + fake-gcs) |
 
 ### Running Wave 2
 
@@ -363,7 +351,7 @@ Or directly:
 go test -race -count=1 -tags=integration ./tests/integration/...
 ```
 
-Runtime: ~90 seconds total. Container startup dominates; each test reuses
+Runtime: ~60 seconds total. Container startup dominates; each test reuses
 a single container across its scenarios via `t.Cleanup`.
 
 ### CI
@@ -378,35 +366,40 @@ for protocol-level regressions.
 
 ### Image pinning
 
-`RUSTFS_IMAGE`, `FAKEGCS_IMAGE`, `KUBO_IMAGE` env vars override the
-defaults. Local dev defaults to `:latest` for convenience; CI pins to
-specific released digests in `.github/workflows/integration.yml` so
-container updates are deliberate commits, not silent drift.
+`RUSTFS_IMAGE` and `FAKEGCS_IMAGE` env vars override the defaults.
+Local dev defaults to `:latest` for convenience; CI pins to specific
+released digests in `.github/workflows/integration.yml` so container
+updates are deliberate commits, not silent drift.
 
 ---
 
 ## Wave 3: real cloud staging (implemented)
 
-Wave 3 runs the conformance suite against the two cloud-coupled
-backends in scope: real GCS and Filebase IPFS pinning. This catches
-vendor-specific production quirks that containerized emulators miss
-— GCS V4 signed-URL compatibility, Filebase IPFS propagation timing.
+Wave 3 runs the conformance suite against the one cloud-coupled
+backend in scope: real GCS. This catches vendor-specific production
+quirks that fake-gcs-server misses — GCS V4 signed-URL compatibility,
+real GCS error classification, regional latency.
 
 The S3-protocol path is **not** in Wave 3. It is exercised in Wave 2
 against a containerized RustFS, which is the supported S3-protocol
 implementation. Real-cloud S3 vendors (AWS, Wasabi, R2, Filebase-S3)
-are intentionally not tested here.
+are intentionally not in scope.
 
 ### Files
 
 ```
 tests/staging/
 ├── doc.go                             # purpose, credential policy, cost model
-├── main_test.go                       # STAGING_ENABLED gate + per-vendor credential validation
+├── credentials.go                     # credentialGroup + validate (no build tag,
+│                                       # so credentials_test.go runs in every
+│                                       # `go test ./...` run)
+├── credentials_test.go                # full coverage of credentialGroup.validate
+├── env_helper_test.go                 # unsetEnvDirect helper for clearing env
+├── main_test.go                       # STAGING_ENABLED gate + stagingVendors() list
 ├── helpers_test.go                    # randomPrefix + operation counter
-├── http_helpers_test.go               # fetchURLBytes + eventual-consistency retry
-├── suite_gcs_test.go                  # real GCS conformance + V4 signed URL fetch
-└── suite_filebase_ipfs_test.go        # Filebase IPFS RPC + CID digest property + gateway fetch
+├── http_helpers_test.go               # fetchURLBytes (no eventual-consistency
+│                                       # retry — gone with the IPFS suite)
+└── suite_gcs_test.go                  # real GCS conformance + V4 signed URL fetch
 
 internal/signers/                       # Shared real signers (no build tag)
 ├── sigv4.go                            # Full SigV4 with PresignGetObject (used by RustFS)
@@ -414,8 +407,10 @@ internal/signers/                       # Shared real signers (no build tag)
 └── s3_presigner.go                     # Bound S3-protocol presigner wrapper
 ```
 
-Every test file carries `//go:build staging`. Neither Wave 1 nor Wave 2
-compiles this package.
+Every staging-suite file carries `//go:build staging`. The
+`credentials.go` + `credentials_test.go` pair deliberately does NOT
+carry the tag, so the validator's branches are exercised on every
+`go test ./...` run, not just under `-tags=staging`.
 
 ### What Wave 3 uniquely validates
 
@@ -424,19 +419,11 @@ compiles this package.
 | Wire shape | ✓ | ✓ | ✓ |
 | Vendor error classification | our model | reference impl | **production impl** |
 | Real GCS V4 signed URL format | no | no | ✓ |
-| Real Kubo CID from Filebase | no | unauthenticated Kubo | ✓ **with auth, real network** |
-| Eventual consistency behavior | no | no | ✓ (IPFS gateway propagation) |
+| Eventual consistency behavior | no | no | ✓ |
 
-The most valuable Wave 3 tests:
-
-- `TestGCS_SignedURLIsFetchable` — proves our V4 RSA-SHA256 signing
-  matches GCS's expected format
-- `TestFilebase_IPFS_CIDDigestMatchesSDK` — the production analogue
-  of Wave 2's Kubo test: Filebase's IPFS implementation returns CIDs
-  whose extracted digests match our SDK's computation
-- `TestFilebase_IPFS_GatewayURL_Fetchable` — content pinned via RPC
-  actually becomes fetchable at the public gateway (with backoff for
-  eventual consistency)
+The most valuable Wave 3 test is `TestGCS_SignedURLIsFetchable` —
+proves our V4 RSA-SHA256 signing matches GCS's expected format and
+that a presigned URL can actually be fetched from GCS's edge.
 
 ### Gating
 
@@ -453,16 +440,17 @@ should.
 
 ### Credentials
 
-Per-vendor credential sets are validated by `main_test.go` at startup.
-A partial set (some vars set, others missing) is a fatal misconfiguration
-— the test binary exits with status 2 and names the missing vars.
-Absent ALL vars for a vendor, that vendor's tests skip cleanly with a
-`t.Logf` trail so the skip shows up in the CI summary.
+Per-vendor credential sets are validated by `main_test.go` at startup
+via the `stagingVendors()` list (extension point: adding a Wave 3
+vendor adds an entry here). A partial set (some vars set, others
+missing) is a fatal misconfiguration — the test binary exits with
+status 2 and names the missing vars. Absent ALL vars for a vendor,
+that vendor's tests skip cleanly with a `t.Logf` trail so the skip
+shows up in the CI summary.
 
 | Vendor | Env vars |
 |---|---|
 | GCS | `STAGING_GCS_BUCKET`, `STAGING_GCS_SERVICE_ACCOUNT_JSON` (path), `STAGING_GCS_ACCESS_TOKEN` (from `gcloud auth print-access-token`, minted by CI) |
-| Filebase IPFS | `STAGING_FILEBASE_IPFS_TOKEN` |
 
 ### Cost control
 
@@ -506,8 +494,7 @@ Step 5 includes the v7.75-specific test surface:
 | Test file | What it pins |
 |---|---|
 | `api/push_algorithm_agile_test.go` | Part 2: push uses `cid.Verify` (algorithm-agile, not hard-coded SHA-256) |
-| `backends/ipfs_algorithm_guard_test.go` | Part 3: IPFS rejects non-SHA-256 CIDs at every method, fail-closed before any HTTP |
-| `tests/conformance/scenarios_cid_wire.go` | Part 3: `CID.Bytes()` wire-form preserved (algorithm tag survives) across every backend |
+| `tests/conformance/scenarios_cid_wire.go` | Part 3: `CID.Bytes()` wire-form preserved (algorithm tag survives) across every object-store backend |
 | `api/token_test.go` `TestToken_Verify_KidDispatch_*` | Part 4: kid-keyed verifier dispatches correctly across rotation windows |
 | `api/push_token_test.go` `TestPush_TokenRotationWindow_*` | Part 4: operator key rotation honored at the push handler with `token_unknown_kid` audit reason |
 | `cmd/artifact-store/token_test.go` | Part 4: `ARTIFACT_OPERATOR_PUBKEYS` and `ARTIFACT_OPERATOR_PUBKEYS_DIR` loaders parse PEM/hex/base64 |
@@ -523,12 +510,11 @@ distinct red signal, not buried inside a generic test failure.
 ```bash
 make test                   # Wave 1 — 5 seconds
 make test-verbose           # same with -v
-make test-integration       # Wave 2 — 90 seconds, requires Docker
+make test-integration       # Wave 2 — ~60 seconds, requires Docker
 make test-staging           # Wave 3 — up to 5 minutes, requires STAGING_ENABLED=1 + vendor credentials
 make audit-v775-consumer    # v7.75 SDK alignment gate (build + vet + Wave 1 tests)
 make coverage               # produces coverage.html
 make lint                   # go vet + staticcheck
-make fuzz                   # 30s per fuzz target
 make flake                  # 50 iterations; detects flakes
 make test-all         # lint + test + coverage-gate
 ```

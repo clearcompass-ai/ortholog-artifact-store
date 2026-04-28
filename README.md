@@ -2,7 +2,7 @@
 
 Content-addressed blob store for the [Ortholog](https://github.com/clearcompass-ai/ortholog-sdk) decentralized credentialing protocol.
 
-A small HTTP service that stores ciphertext blobs keyed by CID, with pluggable storage backends (GCS, RustFS, IPFS, in-memory) and optional mirroring. It never computes CIDs, never encrypts, never holds keys — that's the SDK's job. It stores bytes and gives them back.
+A small HTTP service that stores ciphertext blobs keyed by CID against an **object store**: GCS, RustFS, or any future provider that satisfies the `BackendProvider` interface. Optional mirroring composes any pair of object stores. It never computes CIDs, never encrypts, never holds keys — that's the SDK's job. It stores bytes and gives them back.
 
 ---
 
@@ -21,11 +21,6 @@ ARTIFACT_BACKEND=rustfs \
   ARTIFACT_BUCKET=artifacts \
   ARTIFACT_PATH_STYLE=true \
   go run ./cmd/artifact-store
-
-# IPFS via Kubo
-ARTIFACT_BACKEND=ipfs \
-  ARTIFACT_IPFS_ENDPOINT=http://localhost:5001 \
-  go run ./cmd/artifact-store
 ```
 
 The service listens on `:8082` by default. Override with `ARTIFACT_LISTEN_ADDR`.
@@ -39,37 +34,30 @@ The service listens on `:8082` by default. Override with `ARTIFACT_LISTEN_ADDR`.
 | `POST` | `/v1/artifacts` | Push bytes (header `X-Artifact-CID: <cid>`) |
 | `GET` | `/v1/artifacts/{cid}` | Fetch raw bytes |
 | `HEAD` | `/v1/artifacts/{cid}` | Existence check |
-| `DELETE` | `/v1/artifacts/{cid}` | Delete (GCS/RustFS only; 501 on IPFS) |
+| `DELETE` | `/v1/artifacts/{cid}` | Delete |
 | `POST` | `/v1/artifacts/{cid}/pin` | Pin against GC |
-| `GET` | `/v1/artifacts/{cid}/resolve` | Retrieve a `RetrievalCredential` (direct/signed URL/IPFS gateway) |
+| `GET` | `/v1/artifacts/{cid}/resolve` | Retrieve a `RetrievalCredential` (signed URL or direct in-memory) |
 | `GET` | `/healthz` | Backend reachability |
 
 `?expiry=<seconds>` on `/resolve` overrides the default signed-URL lifetime.
 
-### IPFS backend: permanent URLs
+### Resolve methods
 
-When the backend is IPFS, `/resolve` returns a gateway URL with `expiry: null`
-in the JSON response. The URL is a public, permanent pointer to the content
-on the IPFS network — there is no expiration because nothing on the server
-side can be expired. This differs from GCS/RustFS, which return signed URLs with
-a bounded lifetime.
-
-Consumers of the `/resolve` endpoint must handle both cases:
+Every supported object-store backend returns a `signed_url` retrieval
+credential with a bounded TTL. The in-memory reference returns `direct`
+(no expiry — the URL is the CID itself; intended for tests only).
 
 ```json
-// GCS / RustFS response
+// GCS / RustFS production response
 {"method": "signed_url", "url": "https://...", "expiry": "2026-04-16T17:00:00Z"}
 
-// IPFS response
-{"method": "ipfs",       "url": "https://ipfs.io/ipfs/bafk...", "expiry": null}
+// In-memory test response
+{"method": "direct", "url": "sha256:abc…", "expiry": null}
 ```
 
-The `?expiry=<seconds>` query parameter is silently ignored by the IPFS
-backend. Pass it if you wish — it has no effect on the returned URL.
-
-Security note: anyone who receives an IPFS URL can retrieve the bytes forever.
-For data that requires access control, use a GCS or RustFS backend where
-signed URLs can be scoped in time and revoked by rotating the signing key.
+Signed URLs can be scoped in time and revoked by rotating the cloud
+signing credentials. The artifact store mints them; the cloud edge
+verifies them.
 
 ---
 
@@ -79,16 +67,14 @@ All settings come from environment variables. Only `ARTIFACT_BACKEND` has a mean
 
 | Variable | Default | Notes |
 |---|---|---|
-| `ARTIFACT_BACKEND` | `memory` | `gcs`, `rustfs`, `ipfs`, `memory` |
+| `ARTIFACT_BACKEND` | `memory` | `gcs`, `rustfs`, `memory` |
 | `ARTIFACT_BUCKET` | `ortholog-artifacts` | GCS/RustFS |
 | `ARTIFACT_ENDPOINT` | — | RustFS endpoint URL |
 | `ARTIFACT_REGION` | `us-east-1` | RustFS only (SigV4 region label) |
 | `ARTIFACT_PATH_STYLE` | `false` | RustFS path-style addressing |
 | `ARTIFACT_PREFIX` | — | Object key prefix |
-| `ARTIFACT_IPFS_GATEWAY` | `https://ipfs.io` | Gateway URL returned by `Resolve` |
-| `ARTIFACT_IPFS_BEARER_TOKEN` | — | For Filebase/Pinata/authenticated clusters |
-| `ARTIFACT_MIRROR_BACKEND` | — | Secondary backend (`gcs`/`rustfs`/`ipfs`) |
-| `ARTIFACT_MIRROR_MODE` | `sync` | `sync` or `async_pin` (IPFS↔IPFS only) |
+| `ARTIFACT_MIRROR_BACKEND` | — | Secondary object store (`gcs`/`rustfs`) |
+| `ARTIFACT_MIRROR_MODE` | `sync` | Synchronous double-write (only mode) |
 | `ARTIFACT_VERIFY_ON_PUSH` | `true` | **Do not disable in production.** Validates the body hashes (under the CID's algorithm) to the CID digest server-side. |
 | `ARTIFACT_RESOLVE_EXPIRY` | `3600` | Default signed-URL lifetime (seconds) |
 | `ARTIFACT_LISTEN_ADDR` | `:8082` | |
@@ -96,10 +82,7 @@ All settings come from environment variables. Only `ARTIFACT_BACKEND` has a mean
 
 ### Mirroring
 
-`ARTIFACT_MIRROR_BACKEND=ipfs` layers a second backend behind the primary. Two modes:
-
-- **sync** (default): every Push writes both backends. Primary failure is fatal; mirror failure is logged but non-fatal. Fetches fall back to the mirror on primary error.
-- **async_pin** (IPFS↔IPFS only): Push returns after writing the primary; the mirror is pinned by a background worker. Eventually consistent.
+`ARTIFACT_MIRROR_BACKEND=gcs` (or `rustfs`) layers a second object store behind the primary. The only supported mode is `sync`: every Push writes both backends. Primary failure is fatal; mirror failure is logged but non-fatal. Fetches fall back to the mirror on primary error. The composition is symmetric — any pair of object stores composes (GCS+RustFS for cross-provider redundancy, GCS+GCS for cross-region, etc.).
 
 ---
 
@@ -192,20 +175,19 @@ upstream operator's quota and signing pipeline catches them first.
 ### Notes
 
 - The service does not hold encryption keys. All ciphertext is opaque to the store.
-- IPFS `/resolve` URLs are permanent (see above). For access-controlled data,
-  use GCS or RustFS.
+- Every supported backend is an object store with bounded-TTL signed URLs. Access is controlled by URL scope and rotated by rotating the cloud signing credentials.
 
 ---
 
 ## Development
 
 ```bash
-make test         # Wave 1: unit + HTTP-mocked tests with -race
-make coverage     # HTML coverage report
-make lint         # vet + staticcheck
-make fuzz         # 30s per fuzz target
-make flake        # run the suite 50× to detect flakes
-make test-all     # everything per-PR CI runs
+make test                    # Wave 1: unit + HTTP-mocked tests with -race
+make audit-v775-consumer     # v7.75 SDK alignment gate (build + vet + Wave 1)
+make coverage                # HTML coverage report
+make lint                    # vet + staticcheck
+make flake                   # run the suite 50× to detect flakes
+make test-all                # everything per-PR CI runs
 ```
 
 `make test` completes in about 5 seconds.
@@ -213,10 +195,10 @@ make test-all     # everything per-PR CI runs
 ### Architecture
 
 - `api/` — HTTP handlers, one per route, plus `server.go` that wires them into a `ServeMux`.
-- `backends/` — `BackendProvider` implementations: `gcs.go`, `s3.go`, `ipfs.go`, plus the `MirroredStore` decorator.
+- `backends/` — `BackendProvider` implementations: `gcs.go`, `rustfs.go`, plus the `MirroredStore` decorator and the `InMemoryBackend` reference impl.
 - `config/` — env-var loading and validation.
 - `cmd/artifact-store/` — the `main` that ties it together.
-- `internal/testutil/` — httptest fakes, slog capture, goleak shim, known CID vectors.
+- `internal/testutil/` — httptest fakes (`GCSFake`, `S3Fake`), slog capture, goleak shim, known CID vectors.
 - `tests/conformance/` — the backend contract suite, run against every `BackendProvider`.
 
 ### Testing
