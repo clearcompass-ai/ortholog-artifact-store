@@ -1,11 +1,16 @@
 # ============================================================================
 # ortholog-artifact-store — Wave 3: real-cloud staging tests
 #
-# Runs the conformance suite against production APIs (AWS S3, GCS, Filebase).
-# Scheduled nightly; never per-PR or per-push. This is the layer that catches
-# vendor-specific production quirks — IAM edge cases, real SigV4 verification,
-# GCS V4 signed URL compatibility, Filebase IPFS behavior — that both the
-# HTTP mocks and the Docker containers miss.
+# Runs the conformance suite against the real GCS production API.
+# Scheduled nightly; never per-PR or per-push. This is the layer that
+# catches vendor-specific production quirks — GCS V4 signed URL
+# compatibility, real GCS error classification, regional latency —
+# that both the HTTP mocks and the Docker fake-gcs-server miss.
+#
+# The S3-protocol path is exercised in Wave 2 against a containerized
+# RustFS — real-cloud S3 vendors are not in the supported set. IPFS
+# is no longer a supported backend kind; the prior Filebase-IPFS suite
+# is gone.
 #
 # Cost control:
 #   - Dedicated staging accounts per vendor, scoped to test buckets only
@@ -101,16 +106,6 @@ jobs:
           TOKEN="${GOOGLE_OAUTH_TOKEN:-$(gcloud auth application-default print-access-token)}"
           echo "::add-mask::$TOKEN"
           echo "STAGING_GCS_ACCESS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
-
-      # ──────────────────────────────────────────────────────────────
-      # Filebase IPFS pinning credentials
-      # ──────────────────────────────────────────────────────────────
-      # Filebase is exercised through its IPFS pinning gateway only —
-      # the S3-protocol path is covered in Wave 2 against a containerized
-      # RustFS, not against any real-cloud S3-compatible vendor.
-      - name: inject Filebase IPFS env
-        run: |
-          echo "STAGING_FILEBASE_IPFS_TOKEN=${{ secrets.STAGING_FILEBASE_IPFS_TOKEN }}" >> "$GITHUB_ENV"
 
       - name: go mod download
         run: go mod download

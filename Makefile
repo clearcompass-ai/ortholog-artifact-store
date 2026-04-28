@@ -87,19 +87,17 @@ lint-all: lint ## lint + golangci-lint for everything else.
 	}
 	golangci-lint run --timeout=2m
 
-# ─── Fuzz ────────────────────────────────────────────────────────────
-
-.PHONY: fuzz
-fuzz: ## Run fuzz targets for 30 seconds each (CI setting).
-	$(GO) test -fuzz=FuzzExtractDigestFromIPFSCID -fuzztime=30s ./backends
-	$(GO) test -fuzz=FuzzSDKCIDToIPFSPath_RoundTrip -fuzztime=30s ./backends
-	$(GO) test -fuzz=FuzzParseCID -fuzztime=30s ./backends
-
-.PHONY: fuzz-long
-fuzz-long: ## Run fuzz targets for 5 minutes each (weekly CI setting).
-	$(GO) test -fuzz=FuzzExtractDigestFromIPFSCID -fuzztime=5m ./backends
-	$(GO) test -fuzz=FuzzSDKCIDToIPFSPath_RoundTrip -fuzztime=5m ./backends
-	$(GO) test -fuzz=FuzzParseCID -fuzztime=5m ./backends
+# ─── Fuzz (no targets currently) ─────────────────────────────────────
+#
+# The pre-v7.75 fuzz targets (FuzzExtractDigestFromIPFSCID,
+# FuzzSDKCIDToIPFSPath_RoundTrip, FuzzParseCID) lived in the IPFS
+# backend's CID parser. IPFS is no longer a supported backend kind;
+# the targets and the weekly fuzz workflow (.github/workflows/fuzz.yml)
+# are gone with it.
+#
+# When a future backend or helper introduces a new parser worth
+# fuzzing, re-add a `fuzz` target here pointing at the relevant
+# Fuzz<Name> function and re-add the weekly workflow that mirrors it.
 
 # ─── Flake detection ─────────────────────────────────────────────────
 
@@ -128,10 +126,9 @@ test-all: lint test coverage-gate ## Everything that runs in per-PR CI.
 #      includes:
 #        - api/push_algorithm_agile_test.go   Part 2 (cid.Verify
 #                                              algorithm-agile)
-#        - backends/ipfs_algorithm_guard_test Part 3 (IPFS algorithm
-#                                              guard at every method)
 #        - tests/conformance/scenarios_cid_   Part 3 (CID.Bytes() wire
-#          wire.go                             form across every backend)
+#          wire.go                             form across every
+#                                              object-store backend)
 #        - api/token_test.go kid-dispatch     Part 4 (kid-keyed verifier
 #                                              + SDK signatures.Verify
 #                                              Ed25519)

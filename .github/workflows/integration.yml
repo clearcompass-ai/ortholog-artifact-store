@@ -2,13 +2,13 @@
 # ortholog-artifact-store — Wave 2: testcontainer-backed integration tests
 #
 # Runs the full conformance suite against real protocol implementations
-# (RustFS, fake-gcs-server, Kubo) in Docker containers. This catches
+# (RustFS, fake-gcs-server) in Docker containers. This catches
 # wire-format divergences that Wave 1's HTTP-mocked tests cannot see:
-# multihash encoding drift in IPFS, SigV4 header ordering in the
-# S3-protocol path against RustFS, GCS error-classification quirks.
+# SigV4 header ordering in the S3-protocol path against RustFS, GCS
+# error-classification quirks against fake-gcs-server.
 #
 # Gated on //go:build integration. Per-PR CI does NOT run this — only
-# the scheduled/dispatched workflow. Reason: Wave 2 takes ~90 seconds
+# the scheduled/dispatched workflow. Reason: Wave 2 takes ~60 seconds
 # and requires Docker-in-Docker, which is friction on every PR. The
 # HTTP-mocked tests in Wave 1 already catch 95% of regressions; Wave 2
 # is the safety net that runs nightly + on merges to main.
@@ -25,7 +25,7 @@
 name: integration
 
 on:
-  # Nightly at 05:00 UTC (before the weekly flake-detect and fuzz runs).
+  # Nightly at 05:00 UTC (before the weekly flake-detect run).
   schedule:
     - cron: "0 5 * * *"
   # Run on every merge to main so protocol regressions are caught
@@ -44,7 +44,6 @@ env:
   # is a deliberate commit, not a silent drift behind :latest.
   RUSTFS_IMAGE: "rustfs/rustfs:latest"
   FAKEGCS_IMAGE: "fsouza/fake-gcs-server:1.49.2"
-  KUBO_IMAGE: "ipfs/kubo:v0.28.0"
 
 jobs:
   integration:
@@ -72,7 +71,6 @@ jobs:
         run: |
           docker pull "${RUSTFS_IMAGE}"
           docker pull "${FAKEGCS_IMAGE}"
-          docker pull "${KUBO_IMAGE}"
 
       - name: go mod download
         run: go mod download
