@@ -218,22 +218,6 @@ func createBackend(name string, cfg *config.Config, isMirror bool, _ *slog.Logge
 			PathStyle: cfg.PathStyle,
 		}), nil
 
-	case "ipfs":
-		endpoint := cfg.Endpoint
-		token := cfg.IPFSBearerToken
-		if isMirror {
-			endpoint = cfg.MirrorEndpoint
-			token = cfg.MirrorBearerToken
-		}
-		if endpoint == "" {
-			endpoint = "http://localhost:5001"
-		}
-		return backends.NewIPFSBackend(backends.IPFSConfig{
-			APIEndpoint: endpoint,
-			Gateway:     cfg.IPFSGateway,
-			BearerToken: token,
-		}), nil
-
 	default:
 		return nil, fmt.Errorf("unknown backend %q", name)
 	}
