@@ -142,10 +142,45 @@ Running `go test ./tests/conformance/` must pass.
 | `SupportsDelete` | Conformance runs full delete-then-not-exists lifecycle | Conformance asserts `Delete` returns `storage.ErrNotSupported` |
 | `SupportsExpiry` | Conformance asserts `Resolve` returns a non-nil `Expiry` and different CIDs produce different URLs | Conformance asserts `Resolve` returns nil `Expiry` |
 | `ExpectedResolveMethod` | Required. Conformance asserts `cred.Method` equals exactly this constant. |
+| `SHA256Only` | Conformance asserts non-SHA-256 CIDs are rejected at the call boundary with `storage.ErrNotSupported` (currently: IPFS, multihash 0x12 pinned) | Conformance asserts non-SHA-256 CIDs round-trip with `CID.Bytes()` byte-identical (general-purpose backends — memory, GCS, RustFS) |
 
 Don't guess — read your `Resolve` implementation and set the field
 accordingly. If you ever change the `Method` you return, the conformance
 test catches it.
+
+### CID wire-form discipline (ADR-005 §2 — load-bearing)
+
+SDK v7.75 makes `storage.RegisterAlgorithm` part of the public CID
+contract and pins `artifactCID.Bytes()` (algorithm_byte || digest), not
+`artifactCID.Digest` alone, as the input to the PRE Grant SplitID
+derivation (`crypto/artifact/split_id.go:42-53`). A backend that
+silently strips the algorithm tag — for example, by keying storage on
+`cid.Digest` while ignoring `cid.Algorithm` — will cause recipients to
+compute the wrong SplitID for a non-SHA-256 artifact. The on-log
+commitment lookup returns the wrong commitment; decryption fails (or
+worse, succeeds against a different artifact whose digest happens to
+collide under another algorithm).
+
+Two acceptable patterns; pick one:
+
+**General-purpose** (works with any registered algorithm, like memory /
+GCS / RustFS): key your storage on `cid.String()` (canonical
+"<algoname>:<hex>" form) or `cid.Bytes()`. Both encode the algorithm
+byte; both round-trip cleanly through `storage.ParseCID`.
+
+**Algorithm-pinned** (your protocol pins one algorithm — e.g., IPFS
+multihash 0x12 = SHA-256): set `Capabilities.SHA256Only: true` AND add
+an `ensureXxxAlgorithm(cid, op)` guard at the top of every method that
+touches a CID. The guard returns `storage.ErrNotSupported` wrapped with
+the operation name and the offending algorithm tag, and MUST fail
+closed — no HTTP / RPC / network activity allowed before rejection.
+See `backends/ipfs.go ensureIPFSAlgorithm` for the reference
+implementation and `backends/ipfs_algorithm_guard_test.go` for the
+six unit tests that pin the guard's behavior.
+
+The conformance suite's `CIDWireForm` scenario asserts the property
+end-to-end, gated on `Capabilities.SHA256Only`, so any new backend gets
+the right test variant for free.
 
 ---
 

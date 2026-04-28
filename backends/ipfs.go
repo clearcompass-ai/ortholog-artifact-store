@@ -11,6 +11,20 @@ at the digest level (32-byte SHA-256), not the full CID encoding,
 because IPFS CIDs include multibase + multicodec prefixes that the
 SDK's storage.CID does not.
 
+Algorithm support: SHA-256 only.
+
+  IPFS's content-addressing is multihash-coded, and this backend pins
+  multihash tag 0x12 (SHA-256) for strict round-trip equality with the
+  SDK's storage.CID. Any algorithm registered through
+  storage.RegisterAlgorithm that is NOT AlgoSHA256 is rejected at the
+  call boundary with storage.ErrNotSupported. Failing closed is
+  required: silently stripping the algorithm tag and pinning under a
+  SHA-256 CIDv1 would produce a stored CID whose Bytes() disagrees
+  with what the SDK signed (ADR-005 §2 wire-form mandate), and that
+  disagreement would propagate into PRE Grant SplitID derivations
+  (crypto/artifact/split_id.go:42-53) — recipients would compute the
+  wrong SplitID and look up the wrong commitment.
+
 Delete returns storage.ErrNotSupported (IPFS has best-effort GC, not
 guaranteed deletion). Cryptographic erasure in IPFS means destroying
 the key — the ciphertext may persist on the network.
@@ -50,6 +64,21 @@ func NewIPFSBackend(cfg IPFSConfig) *IPFSBackend {
 	return &IPFSBackend{cfg: cfg, client: &http.Client{Timeout: 120 * time.Second}}
 }
 
+// ensureIPFSAlgorithm is the algorithm guard for every IPFSBackend
+// operation that touches a CID. IPFS content-addressing is multihash-
+// coded and this backend pins multihash tag 0x12 (SHA-256). Any other
+// algorithm registered via storage.RegisterAlgorithm cannot be honored
+// without transcoding, so we return storage.ErrNotSupported wrapped
+// with the operation name and the offending algorithm tag. See the
+// package godoc for the wire-form rationale (ADR-005 §2).
+func ensureIPFSAlgorithm(cid storage.CID, op string) error {
+	if cid.Algorithm == storage.AlgoSHA256 {
+		return nil
+	}
+	return fmt.Errorf("ipfs/%s: %w (CID algorithm tag 0x%02x; IPFS backend supports SHA-256 only)",
+		op, storage.ErrNotSupported, byte(cid.Algorithm))
+}
+
 // doRPC executes a Kubo RPC call. All IPFS operations go through here.
 // Adds Authorization: Bearer header if BearerToken is set.
 func (b *IPFSBackend) doRPC(ctx context.Context, method, path string, body io.Reader, contentType string) (*http.Response, error) {
@@ -68,6 +97,9 @@ func (b *IPFSBackend) doRPC(ctx context.Context, method, path string, body io.Re
 }
 
 func (b *IPFSBackend) Push(cid storage.CID, data []byte) error {
+	if err := ensureIPFSAlgorithm(cid, "push"); err != nil {
+		return err
+	}
 	ctx := context.Background()
 
 	var buf bytes.Buffer
@@ -114,6 +146,9 @@ func (b *IPFSBackend) Push(cid storage.CID, data []byte) error {
 }
 
 func (b *IPFSBackend) Fetch(cid storage.CID) ([]byte, error) {
+	if err := ensureIPFSAlgorithm(cid, "fetch"); err != nil {
+		return nil, err
+	}
 	ctx := context.Background()
 	ipfsCID := SDKCIDToIPFSPath(cid)
 	path := fmt.Sprintf("/api/v0/cat?arg=%s", ipfsCID)
@@ -138,6 +173,9 @@ func (b *IPFSBackend) Fetch(cid storage.CID) ([]byte, error) {
 }
 
 func (b *IPFSBackend) Exists(cid storage.CID) (bool, error) {
+	if err := ensureIPFSAlgorithm(cid, "exists"); err != nil {
+		return false, err
+	}
 	ctx := context.Background()
 	ipfsCID := SDKCIDToIPFSPath(cid)
 	path := fmt.Sprintf("/api/v0/pin/ls?arg=%s&type=all", ipfsCID)
@@ -151,6 +189,9 @@ func (b *IPFSBackend) Exists(cid storage.CID) (bool, error) {
 }
 
 func (b *IPFSBackend) Pin(cid storage.CID) error {
+	if err := ensureIPFSAlgorithm(cid, "pin"); err != nil {
+		return err
+	}
 	ctx := context.Background()
 	ipfsCID := SDKCIDToIPFSPath(cid)
 	path := fmt.Sprintf("/api/v0/pin/add?arg=%s", ipfsCID)
@@ -171,6 +212,9 @@ func (b *IPFSBackend) Delete(_ storage.CID) error {
 }
 
 func (b *IPFSBackend) Resolve(cid storage.CID, _ time.Duration) (*storage.RetrievalCredential, error) {
+	if err := ensureIPFSAlgorithm(cid, "resolve"); err != nil {
+		return nil, err
+	}
 	ipfsCID := SDKCIDToIPFSPath(cid)
 	url := fmt.Sprintf("%s/ipfs/%s", b.cfg.Gateway, ipfsCID)
 	return &storage.RetrievalCredential{

@@ -39,6 +39,7 @@ func TestConformance_Kubo(t *testing.T) {
 			SupportsDelete:        false, // Kubo has best-effort GC, not delete
 			SupportsExpiry:        false, // IPFS gateway URLs are permanent
 			ExpectedResolveMethod: storage.MethodIPFS,
+			SHA256Only:            true, // IPFS multihash 0x12; non-SHA-256 → ErrNotSupported
 		},
 	)
 }
