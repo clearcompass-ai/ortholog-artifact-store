@@ -39,7 +39,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: "1.22"
+  GO_VERSION: "1.25.7"
   # Pin image digests here so CI runs are reproducible. Updating these
   # is a deliberate commit, not a silent drift behind :latest.
   MINIO_IMAGE: "minio/minio:RELEASE.2024-03-21T23-13-43Z"

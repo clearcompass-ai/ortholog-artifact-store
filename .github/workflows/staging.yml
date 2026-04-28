@@ -48,7 +48,7 @@ permissions:
   # which is recommended long-term but out of scope for this initial cut.
 
 env:
-  GO_VERSION: "1.22"
+  GO_VERSION: "1.25.7"
   # The second gate. The Makefile refuses to run staging tests without this.
   STAGING_ENABLED: "1"
 
