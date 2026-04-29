@@ -40,6 +40,7 @@ import (
 	"strings"
 	"time"
 
+	sdklog "github.com/clearcompass-ai/ortholog-sdk/log"
 	"github.com/clearcompass-ai/ortholog-sdk/storage"
 )
 
@@ -72,8 +73,15 @@ type RustFSBackend struct {
 
 // NewRustFSBackend constructs a RustFS-backed BackendProvider.
 // The endpoint is required — there is no implicit hostname inference.
+//
+// HTTP transport: sdklog.DefaultClient(60s) — connection pool of
+// 100 idle conns/host (vs stdlib's 2) plus the SDK's
+// RetryAfterRoundTripper that honors RustFS / S3-wire 503 +
+// Retry-After responses transparently. S3-protocol implementations
+// surface 503 + Retry-After under load; honoring it locally
+// preserves Push/Fetch availability through transient pressure.
 func NewRustFSBackend(cfg RustFSConfig) *RustFSBackend {
-	return &RustFSBackend{cfg: cfg, client: &http.Client{Timeout: 60 * time.Second}}
+	return &RustFSBackend{cfg: cfg, client: sdklog.DefaultClient(60 * time.Second)}
 }
 
 func (s *RustFSBackend) objectURL(cid storage.CID) string {

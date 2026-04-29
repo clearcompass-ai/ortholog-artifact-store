@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	sdklog "github.com/clearcompass-ai/ortholog-sdk/log"
 	"github.com/clearcompass-ai/ortholog-sdk/storage"
 )
 
@@ -47,8 +48,16 @@ type GCSBackend struct {
 }
 
 // NewGCSBackend creates a GCS backend.
+//
+// HTTP transport: sdklog.DefaultClient(60s) — connection pool of
+// 100 idle conns/host (vs stdlib's 2) plus the SDK's
+// RetryAfterRoundTripper that honors GCS's 503 + Retry-After
+// responses transparently. GCS's published rate-limit guidance
+// returns 503 with Retry-After under burst; honoring it locally
+// avoids dropping Push/Fetch operations on the very intervals
+// when retry backoff would have succeeded.
 func NewGCSBackend(cfg GCSConfig) *GCSBackend {
-	return &GCSBackend{cfg: cfg, client: &http.Client{Timeout: 60 * time.Second}}
+	return &GCSBackend{cfg: cfg, client: sdklog.DefaultClient(60 * time.Second)}
 }
 
 func (g *GCSBackend) baseURL() string {
