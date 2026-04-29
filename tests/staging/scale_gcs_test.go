@@ -77,7 +77,7 @@ func TestScale_GCS_PushFetch(t *testing.T) {
 	sizes := []int{1 << 10, 64 << 10, 1 << 20}
 
 	prefix := randomPrefix(t)
-	backend := newGCSBackend(t, prefix)
+	backend := newScaleGCSBackend(t, prefix)
 	t.Logf("scale: N=%d concurrency=%d readback_pct=%d prefix=%s",
 		n, concurrency, readbackPct, prefix)
 
@@ -345,6 +345,43 @@ func TestScale_GCS_PushFetch(t *testing.T) {
 
 	// Sanity: backend interface compile-check.
 	var _ backends.BackendProvider = backend
+}
+
+// newScaleGCSBackend constructs a GCSBackend for the scale test.
+//
+// Unlike newGCSBackend (used by the conformance suite), this
+// constructor does NOT require a service-account JSON key — the
+// scale test only exercises Push / Fetch / Delete, none of which
+// touch Resolve, so no V4 URL signer is needed. ADC alone is
+// sufficient: the operator just runs
+//
+//	gcloud auth application-default login
+//
+// once, and the wrapper script mints a short-lived access token
+// via `gcloud auth application-default print-access-token`.
+//
+// If a future change adds a Resolve call to the scale path, this
+// will fail fast with a clear error from GCSBackend.Resolve rather
+// than silently producing bad URLs.
+func newScaleGCSBackend(t *testing.T, prefix string) backends.BackendProvider {
+	t.Helper()
+	bucket := os.Getenv("STAGING_GCS_BUCKET")
+	if bucket == "" {
+		t.Fatal("STAGING_GCS_BUCKET must be set for the scale test")
+	}
+	tok := os.Getenv("STAGING_GCS_ACCESS_TOKEN")
+	if tok == "" {
+		t.Fatal("STAGING_GCS_ACCESS_TOKEN must be set for the scale test " +
+			"(scripts/run-scale-gcs.sh fills this from " +
+			"`gcloud auth application-default print-access-token`)")
+	}
+	tokenFunc := func() (string, error) { return tok, nil }
+	return backends.NewGCSBackend(backends.GCSConfig{
+		Bucket:    bucket,
+		Prefix:    prefix,
+		TokenFunc: tokenFunc,
+		// URLSigner deliberately nil — the scale path does not call Resolve.
+	})
 }
 
 // makeScaleBody returns a deterministic byte slice of the requested

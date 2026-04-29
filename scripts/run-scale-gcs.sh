@@ -6,15 +6,22 @@
 # api.NewMux server wired to a real GCSBackend, samples a read-back,
 # then deletes everything it pushed.
 #
+# Auth: ADC only. Run once on your workstation:
+#
+#     gcloud auth application-default login
+#
+# This script then mints a short-lived access token via
+#     gcloud auth application-default print-access-token
+# and passes it to the test as STAGING_GCS_ACCESS_TOKEN.
+#
+# A service-account JSON key is NOT required — the scale test only
+# exercises Push / Fetch / Delete, which the GCS JSON API authorises
+# from a Bearer token alone. (V4 signed-URL minting needs a private
+# key, but the scale path never calls /resolve.)
+#
 # Required env:
-#   STAGING_GCS_BUCKET                 — target bucket (must have a
-#                                         lifecycle rule reaping
-#                                         staging/* after 24 h)
-#   STAGING_GCS_SERVICE_ACCOUNT_JSON   — path to service-account JSON
-#   STAGING_GCS_ACCESS_TOKEN           — short-lived OAuth2 access
-#                                         token (e.g. `gcloud auth
-#                                         application-default
-#                                         print-access-token`)
+#   STAGING_GCS_BUCKET     — target bucket (must have a lifecycle
+#                             rule reaping staging/* after 24 h)
 #
 # Optional env (forwarded to the test):
 #   SCALE_N              — object count           (default 10000)
@@ -36,13 +43,24 @@ require() {
 }
 
 require STAGING_GCS_BUCKET
-require STAGING_GCS_SERVICE_ACCOUNT_JSON
-require STAGING_GCS_ACCESS_TOKEN
 
-if [[ ! -f "${STAGING_GCS_SERVICE_ACCOUNT_JSON}" ]]; then
-  echo "FATAL: STAGING_GCS_SERVICE_ACCOUNT_JSON points at a non-existent file: ${STAGING_GCS_SERVICE_ACCOUNT_JSON}" >&2
+if ! command -v gcloud >/dev/null 2>&1; then
+  echo "FATAL: gcloud not found in PATH. Install the Google Cloud CLI" >&2
+  echo "       and run 'gcloud auth application-default login' once." >&2
   exit 2
 fi
+
+# Mint a short-lived access token from ADC. If the user hasn't run
+# `gcloud auth application-default login`, this fails with a gcloud
+# error message that points them at exactly that command.
+echo "==> minting GCS access token from ADC"
+STAGING_GCS_ACCESS_TOKEN="$(gcloud auth application-default print-access-token 2>&1)" || {
+  echo "FATAL: could not mint an access token from ADC. Output above." >&2
+  echo "       If this is the first run, do:" >&2
+  echo "           gcloud auth application-default login" >&2
+  exit 2
+}
+export STAGING_GCS_ACCESS_TOKEN
 
 export STAGING_ENABLED=1
 export SCALE_N="${SCALE_N:-10000}"

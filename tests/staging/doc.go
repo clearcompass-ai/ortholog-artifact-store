@@ -35,8 +35,14 @@ Cost and scheduling:
 
 Credentials (loaded from env, fail loudly if absent when Wave 3 is
 invoked):
-  GCS: STAGING_GCS_BUCKET, STAGING_GCS_SERVICE_ACCOUNT_JSON
-       (path to service-account JSON file)
+  GCS: STAGING_GCS_BUCKET                  (always required)
+       STAGING_GCS_SERVICE_ACCOUNT_JSON    (conformance + signed-URL
+                                            tests only; scale test
+                                            uses ADC alone)
+       STAGING_GCS_ACCESS_TOKEN            (a short-lived OAuth2
+                                            access token; the scale
+                                            wrapper script mints this
+                                            from ADC automatically)
 
 Build tag:
   Every file carries  //go:build staging
