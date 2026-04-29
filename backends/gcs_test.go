@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -69,7 +70,11 @@ func TestGCS_Push_SendsExactRequestShape(t *testing.T) {
 	if !strings.HasPrefix(r.Path, "/upload/storage/v1/b/test-bucket/o") {
 		t.Errorf("path: want /upload/storage/v1/b/test-bucket/o..., got %s", r.Path)
 	}
-	wantName := "artifacts/" + cid.String()
+	// The push URL must URL-encode the object name in the ?name=
+	// value: "/" → "%2F", ":" → "%3A". Without this, GCS path-form
+	// reads (Fetch / Delete / Exists) silently 404 against the
+	// pushed object — see the URL helper docstring in gcs.go.
+	wantName := url.QueryEscape("artifacts/" + cid.String())
 	if !strings.Contains(r.Query, "name="+wantName) {
 		t.Errorf("query: want name=%s, got %s", wantName, r.Query)
 	}
@@ -289,6 +294,100 @@ func TestGCS_Resolve_SignerErrorPropagates(t *testing.T) {
 }
 
 // ─── Token-less backend ──────────────────────────────────────────────
+
+// ─── Object-name URL encoding (regression) ──────────────────────────
+//
+// These tests pin the behavior that all GCS path/query URL helpers
+// URL-encode the object name. Without encoding, real-cloud GCS (and
+// any conformant implementation) silently 404s Fetch / Delete /
+// Exists / Pin against a pushed object whose name contains "/" or
+// ":". The artifact store's CID always contains ":" (the algorithm
+// prefix), and any non-empty Prefix that itself contains "/" forces
+// "/" into the object name. The scale test (tests/staging) was the
+// first caller to combine both — it caught the bug live, which is
+// what this regression test prevents from recurring.
+
+func TestGCS_URLEncoding_PathSegmentEscapesSlashAndColon(t *testing.T) {
+	fake := testutil.NewGCSFake(t)
+	// Slashy prefix + CID with ":" — the same shape the staging
+	// scale test produces (staging/<test>/<nonce>/sha256:<hex>).
+	prefix := "staging/scale/abcd1234/"
+	b := NewGCSBackend(GCSConfig{
+		Bucket:    "test-bucket",
+		Prefix:    prefix,
+		BaseURL:   fake.URL(),
+		TokenFunc: func() (string, error) { return "tok", nil },
+	})
+	data := []byte("encoded-path-roundtrip")
+	cid := storage.Compute(data)
+
+	if err := b.Push(cid, data); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	got, err := b.Fetch(cid)
+	if err != nil {
+		t.Fatalf("Fetch after Push: %v (this would 404 against real GCS without URL encoding)", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatalf("Fetch returned wrong bytes")
+	}
+
+	// Inspect the wire form. The Fetch request line must carry the
+	// encoded form (not the raw "/" and ":" in the path), because
+	// real GCS rejects the raw form.
+	reqs := fake.Requests()
+	var fetchReq testutil.ObservedRequest
+	for _, r := range reqs {
+		if r.Method == http.MethodGet && strings.Contains(r.RawPath, "/o/") {
+			fetchReq = r
+		}
+	}
+	wantSegment := url.PathEscape(prefix + cid.String())
+	if !strings.Contains(fetchReq.RawPath, wantSegment) {
+		t.Errorf("fetch raw path: want encoded segment %q in %q",
+			wantSegment, fetchReq.RawPath)
+	}
+	// Belt-and-suspenders: the raw path must NOT contain the
+	// unencoded prefix (which would be the bug).
+	if strings.Contains(fetchReq.RawPath, prefix+cid.String()) {
+		t.Errorf("fetch raw path contains unencoded object name: %q",
+			fetchReq.RawPath)
+	}
+}
+
+func TestGCS_Delete_SurfacesNon2xx(t *testing.T) {
+	// Before the fix Delete returned nil regardless of status,
+	// silently masking 4xx/5xx (and the URL-encoding 404 bug above).
+	// This test pins the new contract: 404 → ErrContentNotFound,
+	// other non-2xx → wrapped error, 2xx → nil.
+	fake := testutil.NewGCSFake(t)
+	fake.DeleteStatus = http.StatusForbidden
+	b := newGCSBackendWithFake(t, fake)
+	cid := storage.Compute([]byte("x"))
+
+	err := b.Delete(cid)
+	if err == nil {
+		t.Fatal("Delete on 403: want error, got nil (the swallow-all bug returned)")
+	}
+	if errors.Is(err, storage.ErrContentNotFound) {
+		t.Fatalf("Delete 403 must NOT be reported as not-found: %v", err)
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Errorf("Delete error should mention status; got: %v", err)
+	}
+}
+
+func TestGCS_Delete_404MapsToErrContentNotFound(t *testing.T) {
+	fake := testutil.NewGCSFake(t)
+	fake.DeleteStatus = http.StatusNotFound
+	b := newGCSBackendWithFake(t, fake)
+	cid := storage.Compute([]byte("missing"))
+
+	err := b.Delete(cid)
+	if !errors.Is(err, storage.ErrContentNotFound) {
+		t.Fatalf("Delete 404: want ErrContentNotFound, got %v", err)
+	}
+}
 
 func TestGCS_NoTokenFunc_NoAuthHeader(t *testing.T) {
 	// A backend constructed without TokenFunc should omit Authorization.
