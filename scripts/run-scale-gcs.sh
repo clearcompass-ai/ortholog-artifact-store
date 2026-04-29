@@ -70,6 +70,13 @@ export SCALE_READBACK_PCT="${SCALE_READBACK_PCT:-1}"
 echo "==> scale test: GCS bucket=${STAGING_GCS_BUCKET}"
 echo "    SCALE_N=${SCALE_N}  SCALE_CONCURRENCY=${SCALE_CONCURRENCY}  SCALE_READBACK_PCT=${SCALE_READBACK_PCT}%"
 
+# GOWORK=off so a parent-directory go.work that doesn't list this
+# module (common when this repo is checked out next to siblings under
+# ~/workspace) doesn't break  go test  with "directory prefix
+# tests/staging does not contain modules listed in go.work". This
+# repo is a self-contained module — it doesn't need a workspace.
+export GOWORK=off
+
 # -timeout=60m gives a 10K-object run against real GCS plenty of
 # headroom; default 10m would fight worst-case tail latency on the
 # 1 MiB objects.

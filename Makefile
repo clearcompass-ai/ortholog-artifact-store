@@ -18,6 +18,14 @@ PKGS := ./...
 COVERAGE_OUT := coverage.out
 COVERAGE_HTML := coverage.html
 
+# This repo is a self-contained module. A parent-directory go.work
+# that doesn't list it (common when the repo lives next to siblings
+# under ~/workspace) makes `go test`/`go vet ./...` fail with
+# "directory prefix ... does not contain modules listed in go.work".
+# Setting GOWORK=off Make-wide sidesteps the collision without
+# touching the user's personal workspace file.
+export GOWORK := off
+
 .PHONY: help
 help: ## Show this help.
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n\nTargets:\n"} /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
