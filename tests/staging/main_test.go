@@ -61,13 +61,24 @@ func TestMain(m *testing.M) {
 // stagingVendors lists every vendor whose credential set is checked at
 // Wave 3 startup. Today: GCS only. Adding a new cloud-coupled backend
 // adds an entry here; the rest of the file is shape-stable.
+//
+// Note: STAGING_GCS_SERVICE_ACCOUNT_JSON is intentionally NOT in the
+// gating set. The conformance suite needs it (it mints V4 signed URLs
+// via signers.LoadGCSServiceAccount), but the scale test
+// (TestScale_GCS_PushFetch) does not — that path only exercises
+// Push / Fetch / Delete, which the GCS JSON API authorises from a
+// Bearer access token alone (ADC). Keeping the gating set to BUCKET
+// only lets `make test-scale-gcs` work from `gcloud auth
+// application-default login` without a service-account key. Tests
+// that DO need the JSON key (the conformance suite, the signed-URL
+// integration test) check for it at their own use-site and fail
+// loudly there if it's absent.
 func stagingVendors() []credentialGroup {
 	return []credentialGroup{
 		{
 			name: "GCS",
 			keys: []string{
 				"STAGING_GCS_BUCKET",
-				"STAGING_GCS_SERVICE_ACCOUNT_JSON",
 			},
 		},
 	}
