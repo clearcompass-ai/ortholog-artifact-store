@@ -54,4 +54,5 @@ func RunBackendConformance(t *testing.T, name string, factory Factory, caps Capa
 	t.Run(name+"/CIDParse", func(t *testing.T) { runCIDParse(t, factory, caps) })
 	t.Run(name+"/CIDVerify", func(t *testing.T) { runCIDVerify(t, factory, caps) })
 	t.Run(name+"/ResolveWire", func(t *testing.T) { runResolveWire(t, factory, caps) })
+	t.Run(name+"/CIDUnregistered", func(t *testing.T) { runCIDUnregistered(t, factory, caps) })
 }
