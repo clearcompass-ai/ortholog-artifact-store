@@ -194,7 +194,17 @@ func (s *RustFSBackend) Delete(cid storage.CID) error {
 		return fmt.Errorf("rustfs/delete: %w", err)
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	// S3 DELETE is idempotent: AWS and RustFS both return 204 No
+	// Content whether the object existed or not. So we don't map a
+	// 404 to ErrContentNotFound here (the GCS backend does because
+	// GCS does signal not-found on DELETE — different vendor
+	// contract). Anything outside 2xx is a real failure (auth,
+	// quota, server error) that previously was silently swallowed;
+	// surfacing it is the whole point of this change.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("rustfs/delete: HTTP %d: %s", resp.StatusCode, body)
+	}
 	return nil
 }
 
