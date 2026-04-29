@@ -220,6 +220,41 @@ func TestRustFS_Delete(t *testing.T) {
 	}
 }
 
+// TestRustFS_Delete_SurfacesNon2xx pins the contract that any non-2xx
+// response from the S3 endpoint becomes a real error, not silent
+// success. Before the fix Delete returned nil regardless of status,
+// which would have hidden auth failures (403), quota issues (429),
+// and server errors (5xx). S3 DELETE is idempotent — 204 even for
+// missing objects — so unlike the GCS backend we don't surface
+// anything as ErrContentNotFound here; every non-2xx is a failure.
+func TestRustFS_Delete_SurfacesNon2xx(t *testing.T) {
+	fake := testutil.NewS3Fake(t)
+	fake.DeleteStatus = http.StatusForbidden
+	b, _ := newRustFSBackendWithFake(t, fake)
+	cid := storage.Compute([]byte("x"))
+
+	err := b.Delete(cid)
+	if err == nil {
+		t.Fatal("Delete on 403: want error, got nil (the swallow-all bug returned)")
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Errorf("Delete error should mention status; got: %v", err)
+	}
+}
+
+func TestRustFS_Delete_204IsSuccess(t *testing.T) {
+	// AWS / RustFS both return 204 No Content on a successful idempotent
+	// delete. The previous swallow-all code masked this by accepting
+	// any status; the new code must explicitly accept 2xx.
+	fake := testutil.NewS3Fake(t)
+	fake.DeleteStatus = http.StatusNoContent
+	b, _ := newRustFSBackendWithFake(t, fake)
+	cid := storage.Compute([]byte("y"))
+	if err := b.Delete(cid); err != nil {
+		t.Fatalf("Delete on 204: want nil, got %v", err)
+	}
+}
+
 func TestRustFS_Healthy_OK(t *testing.T) {
 	fake := testutil.NewS3Fake(t)
 	b, _ := newRustFSBackendWithFake(t, fake)

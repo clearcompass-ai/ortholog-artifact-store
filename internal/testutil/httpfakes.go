@@ -44,12 +44,20 @@ type GCSFake struct {
 }
 
 // ObservedRequest captures one request for later assertions.
+//
+// Path is the decoded request path (Go's r.URL.Path) — convenient for
+// "did this request hit /storage/v1/b/<bucket>/o/<name>" assertions.
+// RawPath is the on-the-wire encoded form (Go's r.URL.EscapedPath()) —
+// preserved separately so tests can pin URL-encoding behavior, e.g.
+// confirming "/" in an object name is sent as "%2F" rather than as a
+// literal slash.
 type ObservedRequest struct {
-	Method string
-	Path   string
-	Query  string
-	Header http.Header
-	Body   []byte
+	Method  string
+	Path    string
+	RawPath string
+	Query   string
+	Header  http.Header
+	Body    []byte
 }
 
 // NewGCSFake starts an httptest.Server backed by the GCS JSON API.
@@ -90,11 +98,12 @@ func (f *GCSFake) handle(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	f.mu.Lock()
 	f.requests = append(f.requests, ObservedRequest{
-		Method: r.Method,
-		Path:   r.URL.Path,
-		Query:  r.URL.RawQuery,
-		Header: r.Header.Clone(),
-		Body:   body,
+		Method:  r.Method,
+		Path:    r.URL.Path,
+		RawPath: r.URL.EscapedPath(),
+		Query:   r.URL.RawQuery,
+		Header:  r.Header.Clone(),
+		Body:    body,
 	})
 	f.mu.Unlock()
 
@@ -264,11 +273,12 @@ func (f *S3Fake) handle(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	f.mu.Lock()
 	f.requests = append(f.requests, ObservedRequest{
-		Method: r.Method,
-		Path:   r.URL.Path,
-		Query:  r.URL.RawQuery,
-		Header: r.Header.Clone(),
-		Body:   body,
+		Method:  r.Method,
+		Path:    r.URL.Path,
+		RawPath: r.URL.EscapedPath(),
+		Query:   r.URL.RawQuery,
+		Header:  r.Header.Clone(),
+		Body:    body,
 	})
 	f.mu.Unlock()
 

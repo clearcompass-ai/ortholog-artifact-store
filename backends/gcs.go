@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -59,16 +60,36 @@ func (g *GCSBackend) baseURL() string {
 
 func (g *GCSBackend) objectPath(cid storage.CID) string { return g.cfg.Prefix + cid.String() }
 
+// URL helpers.
+//
+// Per the GCS JSON API spec, object names embedded in a URL must be
+// URL-encoded so that special characters (notably "/" and ":") in
+// the name are not parsed as URL structure. The artifact store keys
+// objects by `<prefix><cid.String()>`, where prefix can include "/"
+// (e.g. "staging/<test>/<nonce>/") and cid.String() always contains
+// a ":" (e.g. "sha256:<hex>"). Without encoding, GET/DELETE/PATCH
+// against the path-segment form `/storage/v1/b/<bucket>/o/<name>`
+// silently 404s on real GCS — the unencoded "/"s in the name are
+// interpreted as further URL path elements rather than part of the
+// object name.
+//
+// Push (?uploadType=media&name=...) uses the query-string form, where
+// historically GCS tolerated unencoded "/"; we still encode here for
+// correctness and to keep behavior identical between regimes.
+
 func (g *GCSBackend) apiURL(object string) string {
-	return fmt.Sprintf("%s/upload/storage/v1/b/%s/o?uploadType=media&name=%s", g.baseURL(), g.cfg.Bucket, object)
+	return fmt.Sprintf("%s/upload/storage/v1/b/%s/o?uploadType=media&name=%s",
+		g.baseURL(), g.cfg.Bucket, url.QueryEscape(object))
 }
 
 func (g *GCSBackend) objectURL(object string) string {
-	return fmt.Sprintf("%s/storage/v1/b/%s/o/%s", g.baseURL(), g.cfg.Bucket, object)
+	return fmt.Sprintf("%s/storage/v1/b/%s/o/%s",
+		g.baseURL(), g.cfg.Bucket, url.PathEscape(object))
 }
 
 func (g *GCSBackend) mediaURL(object string) string {
-	return fmt.Sprintf("%s/storage/v1/b/%s/o/%s?alt=media", g.baseURL(), g.cfg.Bucket, object)
+	return fmt.Sprintf("%s/storage/v1/b/%s/o/%s?alt=media",
+		g.baseURL(), g.cfg.Bucket, url.PathEscape(object))
 }
 
 func (g *GCSBackend) authHeader() (string, error) {
@@ -193,8 +214,21 @@ func (g *GCSBackend) Delete(cid storage.CID) error {
 		return fmt.Errorf("gcs/delete: %w", err)
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
-	return nil
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	// GCS returns 204 No Content on a successful delete; 200 is also
+	// observed for some legacy paths. 404 is "object not present" —
+	// surfaced distinctly so callers can tell "delete succeeded" from
+	// "delete found nothing to do." Anything else is a real failure
+	// (auth, quota, server error) that previously was silently
+	// swallowed; surfacing it is the whole point of this change.
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusNoContent:
+		return nil
+	case http.StatusNotFound:
+		return storage.ErrContentNotFound
+	default:
+		return fmt.Errorf("gcs/delete: HTTP %d: %s", resp.StatusCode, body)
+	}
 }
 
 func (g *GCSBackend) Resolve(cid storage.CID, expiry time.Duration) (*storage.RetrievalCredential, error) {
