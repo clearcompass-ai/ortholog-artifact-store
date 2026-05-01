@@ -50,6 +50,39 @@ func freePort(t *testing.T) int {
 //
 // We talk to the real Vault HTTP API — no mocks. If Vault changes
 // behavior, the test fails loudly.
+// vaultTestMu serializes Vault dev-mode tests within this package.
+// The lock is acquired at vaultDevMode entry and released via
+// t.Cleanup, so it covers the full lifetime of: subprocess spawn →
+// readiness probe → backend mounts → test body → t.Cleanup tear-down.
+//
+// Why we need it even though tests in a single package run serially
+// by default (Go runs tests in declared order, one at a time, unless
+// t.Parallel is called): under heavy load — `go test ./...` running
+// in parallel across many packages, or future `t.Parallel()` callers
+// inside this package — Vault dev-mode startup takes long enough
+// that the readiness probe + backend-mount setup races against
+// itself. Serializing at the package level removes that race.
+//
+// "Stuck-forever" protection: the lock holder also bounds the
+// dev-mode setup with vaultSetupTimeout, so a hung Vault subprocess
+// fails the test in seconds rather than holding the lock until
+// `go test`'s default 10-minute -timeout fires.
+var vaultTestMu sync.Mutex
+
+// vaultSetupTimeout is the total budget for vaultDevMode's
+// subprocess-up-and-ready phase: spawn + health probe + mount kv-v2
+// + mount transit. Generous enough to ride out CPU contention from
+// other parallel test packages, short enough that a genuinely stuck
+// subprocess fails the test before the test-level -timeout fires.
+const vaultSetupTimeout = 30 * time.Second
+
+// vaultRequestTimeout is the per-HTTP-request bound used during
+// dev-mode setup. The previous 500ms value was too tight when other
+// test packages were saturating the CPU; 5s rides out scheduling
+// jitter without masking real connectivity failures (a real outage
+// fires the surrounding vaultSetupTimeout instead).
+const vaultRequestTimeout = 5 * time.Second
+
 func vaultDevMode(t *testing.T) (endpoint, token string) {
 	t.Helper()
 
@@ -57,6 +90,13 @@ func vaultDevMode(t *testing.T) (endpoint, token string) {
 	if _, err := os.Stat(bin); err != nil {
 		t.Skipf("vault binary not found at %s: %v (set VAULT_BIN to override)", bin, err)
 	}
+
+	// Serialize across all Vault tests in the package. Hold for the
+	// lifetime of the test (release in Cleanup) so the test body runs
+	// under the lock too — preventing a follow-up test from racing
+	// our subprocess teardown.
+	vaultTestMu.Lock()
+	t.Cleanup(vaultTestMu.Unlock)
 
 	port := freePort(t)
 	endpoint = fmt.Sprintf("http://127.0.0.1:%d", port)
@@ -100,9 +140,11 @@ func vaultDevMode(t *testing.T) (endpoint, token string) {
 		drainWG.Wait()
 	})
 
-	// Wait for Vault to report unsealed.
-	deadline := time.Now().Add(15 * time.Second)
-	hc := &http.Client{Timeout: 500 * time.Millisecond}
+	// Wait for Vault to report unsealed. Total budget bounded by
+	// vaultSetupTimeout — covers spawn + probe + mounts so a stuck
+	// subprocess fails the test in seconds, not minutes.
+	deadline := time.Now().Add(vaultSetupTimeout)
+	hc := &http.Client{Timeout: vaultRequestTimeout}
 	for time.Now().Before(deadline) {
 		req, _ := http.NewRequest(http.MethodGet, endpoint+"/v1/sys/health", nil)
 		req.Header.Set("X-Vault-Token", token)
@@ -115,7 +157,7 @@ func vaultDevMode(t *testing.T) (endpoint, token string) {
 		}
 		time.Sleep(150 * time.Millisecond)
 	}
-	t.Fatal("vault dev mode did not become ready within 15s")
+	t.Fatalf("vault dev mode did not become ready within %v", vaultSetupTimeout)
 ready:
 
 	// Dev mode mounts kv-v1 at "secret/". Disable + re-mount as kv-v2.
