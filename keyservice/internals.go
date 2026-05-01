@@ -36,6 +36,10 @@ func aesGCMSeal(key, nonce, plaintext []byte) ([]byte, error) {
 // aesGCMOpen reverses aesGCMSeal — runs gcm.Open with the supplied
 // nonce against the full ciphertext (no embedded nonce prefix to
 // strip). Mirrors crypto/artifact.DecryptArtifact byte-for-byte.
+//
+// Validates nonce length up-front: crypto/cipher's gcm.Open panics
+// (rather than returning an error) on the wrong nonce size, and we
+// don't want a malformed input to crash the keyservice goroutine.
 func aesGCMOpen(key, nonce, ciphertext []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -44,6 +48,9 @@ func aesGCMOpen(key, nonce, ciphertext []byte) ([]byte, error) {
 	aead, err := cipher.NewGCM(block)
 	if err != nil {
 		return nil, err
+	}
+	if len(nonce) != aead.NonceSize() {
+		return nil, fmt.Errorf("keyservice: nonce length %d, want %d", len(nonce), aead.NonceSize())
 	}
 	pt, err := aead.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
