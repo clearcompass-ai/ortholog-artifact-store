@@ -228,6 +228,97 @@ func TestNewVaultTransit_RejectsMissingToken(t *testing.T) {
 	}
 }
 
+// kvWriteFailRT is a test-only http.RoundTripper that fails kv-v2
+// data writes (POST /v1/secret/data/...) and passes everything else
+// through. Used to simulate a partial Vault outage where Transit is
+// healthy but kv-v2 is broken (mount permission, storage backend
+// full, etc.) — the leaky scenario that motivates the post-encrypt
+// Transit-key rollback in GenerateAndEncrypt.
+type kvWriteFailRT struct{ inner http.RoundTripper }
+
+func (rt *kvWriteFailRT) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/secret/data/") {
+		return nil, errors.New("simulated kv-v2 outage")
+	}
+	return rt.inner.RoundTrip(r)
+}
+
+// listTransitKeys queries Vault for all transit-key names at the
+// default mount. Returns nil for an empty namespace (Vault returns
+// HTTP 404 in that case). Used to verify rollback removed orphans.
+func listTransitKeys(t *testing.T, hc *http.Client, endpoint, token string) []string {
+	t.Helper()
+	req, err := http.NewRequest("LIST", endpoint+"/v1/transit/keys", nil)
+	if err != nil {
+		t.Fatalf("new LIST request: %v", err)
+	}
+	req.Header.Set("X-Vault-Token", token)
+	resp, err := hc.Do(req)
+	if err != nil {
+		t.Fatalf("LIST transit/keys: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		t.Fatalf("LIST transit/keys HTTP %d: %s", resp.StatusCode, body)
+	}
+	var parsed struct {
+		Data struct {
+			Keys []string `json:"keys"`
+		} `json:"data"`
+	}
+	if err := jsonStdUnmarshalReader(resp.Body, &parsed); err != nil {
+		t.Fatalf("decode LIST: %v", err)
+	}
+	return parsed.Data.Keys
+}
+
+// TestVaultTransit_RollbackTransitKey_OnKVFailure pins the post-
+// encrypt rollback contract: when kv-v2 write fails, the per-
+// artifact Transit key created moments earlier is deleted before
+// returning. Without this, every retry under a sustained kv-v2
+// outage leaks a Transit key (the caller has zero CID, so they
+// can't clean it up).
+func TestVaultTransit_RollbackTransitKey_OnKVFailure(t *testing.T) {
+	endpoint, token := vaultDevMode(t)
+
+	plain := &http.Client{}
+	if got := listTransitKeys(t, plain, endpoint, token); len(got) != 0 {
+		t.Fatalf("pre-test transit keys not empty: %v", got)
+	}
+
+	failing := &http.Client{Transport: &kvWriteFailRT{inner: http.DefaultTransport}}
+	svc, err := NewVaultTransit(VaultTransitConfig{
+		Endpoint:   endpoint,
+		Token:      token,
+		HTTPClient: failing,
+	})
+	if err != nil {
+		t.Fatalf("NewVaultTransit: %v", err)
+	}
+	_, _, err = svc.GenerateAndEncrypt(context.Background(), []byte("hello"))
+	if err == nil {
+		t.Fatal("expected GenerateAndEncrypt to fail under injected kv-v2 outage, got nil")
+	}
+
+	if got := listTransitKeys(t, plain, endpoint, token); len(got) != 0 {
+		t.Fatalf("expected zero transit keys after rolled-back attempt, got %d: %v", len(got), got)
+	}
+
+	// Sanity: a healthy follow-up call still works (the failure
+	// mode left no stale state behind).
+	healthy, err := NewVaultTransit(VaultTransitConfig{Endpoint: endpoint, Token: token})
+	if err != nil {
+		t.Fatalf("NewVaultTransit (healthy): %v", err)
+	}
+	if _, _, err := healthy.GenerateAndEncrypt(context.Background(), []byte("hi")); err != nil {
+		t.Fatalf("post-rollback GenerateAndEncrypt failed: %v", err)
+	}
+}
+
 // TestVaultTransit_ServiceUnavailable_OnUnreachable asserts that a
 // dead endpoint surfaces as artifact.ErrServiceUnavailable so callers
 // can errors.Is against the typed sentinel.

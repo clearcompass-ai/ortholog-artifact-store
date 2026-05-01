@@ -142,10 +142,22 @@ func (v *VaultTransit) GenerateAndEncrypt(
 	wrapped, err := v.transitEncrypt(ctx, keyName, keyMaterial)
 	zeroize(keyMaterial)
 	if err != nil {
+		// Roll back the per-artifact Transit key we just created.
+		// We return a zero CID on this path, so the caller has no
+		// handle to clean it up; without this, every retry under a
+		// sustained outage leaks a Transit key. Cleanup failures
+		// are swallowed — the caller's primary error is more
+		// useful than masking it with a rollback error.
+		_ = v.transitDeleteKey(ctx, keyName)
 		zeroize(keyBytes[:])
 		return storage.CID{}, nil, err
 	}
 	if err := v.kvPutWrapped(ctx, cid, wrapped); err != nil {
+		// Same rollback rationale as transitEncrypt failure: kv-v2
+		// outage (mount permissions, storage backend full, etc.)
+		// would otherwise accumulate one orphaned Transit key per
+		// failed attempt because we return zero CID on this path.
+		_ = v.transitDeleteKey(ctx, keyName)
 		zeroize(keyBytes[:])
 		return storage.CID{}, nil, err
 	}
