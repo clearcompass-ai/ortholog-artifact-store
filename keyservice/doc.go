@@ -36,13 +36,29 @@
 // VM. See artifact.RunConformance — vault_test.go runs it end-to-end
 // against a real Vault dev-mode subprocess (no mocks).
 //
-// # Tier 1.5 — PKCS#11 / SoftHSM2 — pkcs11.go (planned)
+// # Tier 1.5 — PKCS#11 / SoftHSM2 — pkcs11.go
 //
-// Generic on-prem HSM via PKCS#11. Same operation set, different trust
-// boundary (ClassHSMTrue when the HSM supports CKM_ECDH1_DERIVE +
-// CKM_AES_KEY_WRAP_PAD for secp256k1; falls back to envelope mode
-// otherwise). SoftHSM2 is the test-mode driver; production swaps to
-// Thales Luna, Equinix SmartKey, or Fortanix DSM with no code change.
+// Generic on-prem HSM via PKCS#11 (miekg/pkcs11 binding). Per-artifact
+// AES-256 key generated and persisted on the token; CKM_AES_GCM
+// encrypts in-place (key never leaves HSM on the encrypt and decrypt
+// hot paths). Recipient wrap extracts the key once for ECIES (no
+// PKCS#11 module ships with secp256k1 ECDH+AES-KEY-WRAP-PAD natively;
+// extracting for ECIES is the standards-track workaround).
+//
+// CID is committed as the per-key CKA_LABEL after ciphertext is
+// known; nonce piggybacks on CKA_ID. Cryptographic erasure is a
+// CKO_DESTROY of the per-artifact key — the token's persistent store
+// no longer contains it, and SoftHSM2/HSMs never expose the wrapped
+// version, so the on-storage ciphertext becomes opaque garbage.
+//
+// TrustClass: ClassEnvelope (recipient-wrap path holds the key
+// briefly in process). Decrypt path is HSM-resident throughout.
+//
+// SoftHSM2 is the test-mode driver; the same code targets Thales
+// Luna, Equinix SmartKey, Fortanix DSM, AWS CloudHSM, and Azure
+// Managed HSM with no code changes — only ModulePath/TokenLabel/Pin
+// configuration. See artifact.RunConformance — pkcs11_test.go runs
+// it end-to-end against a real SoftHSM2 token (no mocks).
 //
 // # Tier 2 — Cloud HSMs — awscloudhsm.go / azure_managedhsm.go (future)
 //

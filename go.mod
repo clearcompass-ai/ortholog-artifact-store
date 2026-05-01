@@ -5,6 +5,7 @@ go 1.25.7
 require (
 	github.com/clearcompass-ai/ortholog-sdk v0.8.2-0.20260501183902-402b4ed11cc6
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1
+	github.com/miekg/pkcs11 v1.1.1
 	github.com/testcontainers/testcontainers-go v0.31.0
 	go.uber.org/goleak v1.3.0
 )
