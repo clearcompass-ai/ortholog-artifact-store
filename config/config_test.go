@@ -165,6 +165,11 @@ func TestLoad_Defaults(t *testing.T) {
 		"ARTIFACT_REQUIRE_UPLOAD_TOKEN": "",
 		"ARTIFACT_OPERATOR_PUBKEYS":     "",
 		"ARTIFACT_OPERATOR_PUBKEYS_DIR": "",
+		// This test exercises storage-backend defaults; opt out of
+		// the keyservice "vault" default (which requires a token)
+		// so we don't need to fabricate one here. Keyservice defaults
+		// have their own coverage in TestLoad_KeyService_*.
+		"ARTIFACT_KEYSERVICE": "memory",
 	})
 	cfg, err := Load()
 	if err != nil {
