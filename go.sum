@@ -12,8 +12,8 @@ github.com/bits-and-blooms/bitset v1.24.4 h1:95H15Og1clikBrKr/DuzMXkQzECs1M6hhoG
 github.com/bits-and-blooms/bitset v1.24.4/go.mod h1:7hO7Gc7Pp1vODcmWvKMRA9BNmbv6a/7QIWpPxHddWR8=
 github.com/cenkalti/backoff/v4 v4.2.1 h1:y4OZtCnogmCPw98Zjyt5a6+QwPLGkiQsYW5oUqylYbM=
 github.com/cenkalti/backoff/v4 v4.2.1/go.mod h1:Y3VNntkOUPxTVeUxJ/G5vcM//AlwfmyYozVcomhLiZE=
-github.com/clearcompass-ai/ortholog-sdk v0.7.75 h1:p/swikLfMIciFQl/Ahnz23wA3kmLGZ40E1tUJnWnh7Q=
-github.com/clearcompass-ai/ortholog-sdk v0.7.75/go.mod h1:T/elPh+Jll3UnOq5IaxwtA8p2klhwTruKza5ihJfjNE=
+github.com/clearcompass-ai/ortholog-sdk v0.8.2-0.20260501183902-402b4ed11cc6 h1:ioQYLex0DIPGTfv2Q66rnBIFiwsxUHnsvVdcwG0t01I=
+github.com/clearcompass-ai/ortholog-sdk v0.8.2-0.20260501183902-402b4ed11cc6/go.mod h1:T/elPh+Jll3UnOq5IaxwtA8p2klhwTruKza5ihJfjNE=
 github.com/consensys/gnark-crypto v0.20.1 h1:PXDUBvk8AzhvWowHLWBEAfUQcV1/aZgWIqD6eMpXmDg=
 github.com/consensys/gnark-crypto v0.20.1/go.mod h1:RBWrSgy+IDbGR69RRV313th3M/aZU1ubk2om+qHuTSc=
 github.com/containerd/containerd v1.7.15 h1:afEHXdil9iAm03BmhjzKyXnnEBtjaLJefdU7DV0IFes=
