@@ -70,6 +70,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Keyservice selection. Default is Vault Transit OSS; operators
+	// can opt into GCP Cloud KMS + Firestore (real services, no
+	// fakes), local PKCS#11/SoftHSM2, or in-process memory (dev only).
+	// initKeyService returns nil when the binary is started without
+	// keyservice wiring (current API surface doesn't yet consume it
+	// — this is the integration point for the per-recipient envelope
+	// flow landing next).
+	ks, err := initKeyService(ctx, cfg)
+	if err != nil {
+		logger.Error("keyservice init failed", "error", err)
+		os.Exit(1)
+	}
+	_ = ks // wired into api.Mux in the next step; selection logged below for ops visibility
+
 	mux := api.NewMux(api.ServerConfig{
 		Backend:             backend,
 		VerifyOnPush:        cfg.VerifyOnPush,
@@ -103,6 +117,7 @@ func main() {
 	logger.Info("artifact store starting",
 		"addr", cfg.ListenAddr,
 		"backend", cfg.Backend,
+		"keyservice", cfg.KeyService,
 		"env", cfg.Env,
 		"verify_on_push", cfg.VerifyOnPush,
 		"upload_token_policy", cfg.RequireUploadToken,

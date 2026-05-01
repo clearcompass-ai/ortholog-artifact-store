@@ -60,11 +60,38 @@
 // configuration. See artifact.RunConformance — pkcs11_test.go runs
 // it end-to-end against a real SoftHSM2 token (no mocks).
 //
-// # Tier 2 — Cloud HSMs — awscloudhsm.go / azure_managedhsm.go (future)
+// # Tier 2 — GCP Cloud KMS + Firestore — gcpkms.go
+//
+// Managed cloud HSM via GCP Cloud KMS (KEK in HSM, FIPS 140-2 Level 3
+// at HSM protection level) + Firestore as the wrapped-DEK store.
+// Single global KEK pattern: per-artifact AES-256 DEK is generated
+// locally, wrapped under the KEK via cryptoKeys.encrypt, persisted
+// to Firestore at <collection>/<cid-hex>. Cryptographic erasure is
+// the Firestore document delete — without the wrapped blob the KEK
+// alone cannot reproduce the DEK, so the on-storage ciphertext
+// becomes opaque garbage.
+//
+// TrustClass: ClassEnvelope (DEK appears briefly in process for
+// AES-GCM ops + ECIES recipient wrap; KEK never leaves Cloud KMS).
+//
+// Cost: ~$1/month for the KEK at HSM protection level (one global
+// key, not per-artifact); ~$0.06/month at SOFTWARE protection level.
+// Cryptographic operations: ~$0.03 per 10K. Firestore writes/reads
+// at standard rates. At 1M artifact writes/month: <$5 total.
+//
+// Auth: production uses Application Default Credentials (ADC) via
+// golang.org/x/oauth2/google. Tests use in-process httptest.Server
+// fakes that implement the relevant subset of the Cloud KMS REST
+// API (Encrypt, Decrypt) and Firestore REST API (CreateDocument,
+// GetDocument, DeleteDocument) — same hermetic style as the Vault
+// dev-mode subprocess pattern.
+//
+// # Tier 2.5 — Cloud HSMs — awscloudhsm.go / azure_managedhsm.go (future)
 //
 // Direct PKCS#11 against AWS CloudHSM and Azure Managed HSM. Same
-// interface; defer until an auditor or contract requires FIPS 140-2
-// Level 3 attestation.
+// interface; defer until an auditor or contract requires
+// vendor-specific FIPS 140-2 Level 3 attestation that GCP Cloud
+// KMS HSM does not satisfy.
 //
 // # Conformance
 //
