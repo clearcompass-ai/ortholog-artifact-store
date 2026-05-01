@@ -37,6 +37,12 @@ permissions:
 
 env:
   GO_VERSION: "1.25.7"
+  # Bypass the public proxy for our private modules. The SDK is on a
+  # private GitHub repo; the public proxy serves stale/incomplete
+  # tarballs for some tags (observed: v0.8.2 missing lifecycle/artifact
+  # keyservice files even though the git tag points at the merge that
+  # added them). GOPRIVATE forces direct git fetch + skips GOSUMDB.
+  GOPRIVATE: "github.com/clearcompass-ai/*"
 
 jobs:
   lint:
@@ -54,8 +60,13 @@ jobs:
         run: go vet ./...
 
       - name: staticcheck
+        # 2023.1.7 transitively depends on golang.org/x/tools@v0.12.1,
+        # whose internal/tokeninternal/tokeninternal.go:78 fails to
+        # build under Go 1.25 (constant-expression overflow check
+        # rejects the array-length expression). 2025.1.x bumps that
+        # dependency to a version compatible with newer Go releases.
         run: |
-          go install honnef.co/go/tools/cmd/staticcheck@2023.1.7
+          go install honnef.co/go/tools/cmd/staticcheck@2025.1.1
           staticcheck ./...
 
       - name: golangci-lint
@@ -81,6 +92,30 @@ jobs:
 
       - name: build
         run: go build ./...
+
+      # The keyservice package's conformance suite drives REAL backends —
+      # `vault server -dev` for Tier 1 and SoftHSM2 via PKCS#11 for
+      # Tier 1.5. Without these, the relevant TestVaultTransit_* and
+      # TestPKCS11_* tests skip via t.Skipf(), the operation methods
+      # never run, and coverage on keyservice plunges below the 80%
+      # gate. Install both unconditionally — they're tiny (~50MB Vault
+      # bin, ~1MB SoftHSM2 .so) and CI cache amortizes the download.
+      - name: install Vault (for keyservice Tier 1 conformance)
+        run: |
+          set -euo pipefail
+          VAULT_VERSION=1.15.6
+          curl -fsSL -o /tmp/vault.zip \
+            "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip"
+          unzip -o /tmp/vault.zip -d /tmp
+          chmod +x /tmp/vault
+          /tmp/vault version
+
+      - name: install SoftHSM2 (for keyservice Tier 1.5 conformance)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends softhsm2
+          softhsm2-util --version
 
       # v7.75 SDK alignment audit gate. Verifies the artifact store
       # consumes the SDK contract correctly (toolchain, algorithm-agile

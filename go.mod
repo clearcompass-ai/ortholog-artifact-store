@@ -3,7 +3,9 @@ module github.com/clearcompass-ai/ortholog-artifact-store
 go 1.25.7
 
 require (
-	github.com/clearcompass-ai/ortholog-sdk v0.7.75
+	github.com/clearcompass-ai/ortholog-sdk v0.8.2
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1
+	github.com/miekg/pkcs11 v1.1.1
 	github.com/testcontainers/testcontainers-go v0.31.0
 	go.uber.org/goleak v1.3.0
 )
@@ -19,7 +21,6 @@ require (
 	github.com/containerd/containerd v1.7.15 // indirect
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/cpuguy83/dockercfg v0.3.1 // indirect
-	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
 	github.com/distribution/reference v0.5.0 // indirect
 	github.com/docker/docker v25.0.5+incompatible // indirect
 	github.com/docker/go-connections v0.5.0 // indirect
