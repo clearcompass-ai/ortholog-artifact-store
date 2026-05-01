@@ -4,7 +4,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdsa"
-	"crypto/elliptic"
 	"errors"
 	"fmt"
 
@@ -63,17 +62,21 @@ func zeroize(b []byte) {
 	}
 }
 
-// parseRecipientPubKey parses a 65-byte uncompressed secp256k1 public
-// key (SEC1: 0x04 || X || Y). Returns ErrInvalidRecipientKey-shaped
-// errors that callers wrap with the SDK sentinel.
+// parseRecipientPubKey parses a SEC1-encoded secp256k1 public key
+// (uncompressed: 0x04 || X || Y; compressed: 0x02|0x03 || X) into
+// the *ecdsa.PublicKey shape escrow.EncryptForNode expects.
+//
+// Uses secp256k1.ParsePubKey rather than elliptic.Unmarshal —
+// elliptic.Unmarshal has been deprecated since Go 1.21, and
+// secp256k1.S256() is similarly deprecated by upstream in favor of
+// the curve's specialized methods.
 func parseRecipientPubKey(data []byte) (*ecdsa.PublicKey, error) {
 	if len(data) == 0 {
 		return nil, errors.New("empty public key bytes")
 	}
-	c := secp256k1.S256()
-	x, y := elliptic.Unmarshal(c, data)
-	if x == nil {
-		return nil, fmt.Errorf("invalid secp256k1 public key (%d bytes)", len(data))
+	pub, err := secp256k1.ParsePubKey(data)
+	if err != nil {
+		return nil, fmt.Errorf("invalid secp256k1 public key (%d bytes): %w", len(data), err)
 	}
-	return &ecdsa.PublicKey{Curve: c, X: x, Y: y}, nil
+	return pub.ToECDSA(), nil
 }
